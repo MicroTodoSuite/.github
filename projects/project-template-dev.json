@@ -1,0 +1,39 @@
+{
+    "name": "Scrum - Equipo de Desarrollo",
+    "body": "Gestión ágil del equipo de desarrollo de MicroTodoSuite bajo metodología Scrum.",
+    "fields": [
+      {
+        "name": "Sprint",
+        "data_type": "iteration"
+      },
+      {
+        "name": "Tipo de Tarea",
+        "data_type": "single_select",
+        "options": ["Historia", "Tarea Técnica", "Bug", "Historia Infra", "Spike"]
+      },
+      {
+        "name": "Estado Scrum",
+        "data_type": "single_select",
+        "options": ["Backlog", "Sprint Actual", "En Progreso", "En Revisión", "Bloqueado", "Completado"]
+      },
+      {
+        "name": "Prioridad",
+        "data_type": "single_select",
+        "options": ["Alta", "Media", "Baja"]
+      },
+      {
+        "name": "Área Técnica",
+        "data_type": "single_select",
+        "options": ["Frontend", "Backend", "CI/CD", "Infraestructura", "Observabilidad"]
+      },
+      {
+        "name": "Estimación",
+        "data_type": "number"
+      },
+      {
+        "name": "Epic",
+        "data_type": "text"
+      }
+    ]
+  }
+  

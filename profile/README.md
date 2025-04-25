@@ -20,12 +20,17 @@ despliegue automatizado en **Microsoft Azure**, apoyándonos en tecnologías de 
 
 ## 👥 **Equipos y Roles**
 
-Los equipos involucrados en MicroTodoSuite están conformados por especialistas de **GaCode Solutions**, con experiencia
-consolidada en desarrollo de software y operaciones de infraestructura en la nube.
+Los equipos involucrados en **MicroTodoSuite** están conformados por especialistas de **GaCode Solutions**, con
+experiencia consolidada en desarrollo de software, automatización de infraestructura y operaciones en la nube.
+
+El trabajo se gestiona utilizando la metodología ágil **Kanban**, que permite visualizar el flujo de tareas, optimizar
+tiempos de entrega y mejorar la colaboración entre áreas técnicas.
+> 📌 Más detalles sobre nuestro enfoque ágil están
+> disponibles [aquí](https://github.com/MicroTodoSuite/microservice-app-docs/blob/main/docs/Agile%20methodology.md).
 
 | Equipo               | Integrantes | Conocimientos Clave                     | Responsabilidades                                      |
 |----------------------|-------------|-----------------------------------------|--------------------------------------------------------|
-| **🧑‍💻 Desarrollo** | 3           | Node.js, Python, Vue.js, GO, APIs REST  | Implementación del frontend y microservicios           |
+| **🧑‍💻 Desarrollo** | 3           | Node.js, Python, Vue.js, Go, APIs REST  | Implementación del frontend y microservicios           |
 | **🛠️ DevOps/Ops**   | 3           | Azure, Terraform, CI/CD, observabilidad | Gestión de infraestructura, automatización y monitoreo |
 
 ---
@@ -89,6 +94,28 @@ Cada microservicio se mantiene de forma independiente para facilitar despliegues
 
 - **`microservice-app-prometheus`**  
   Contiene configuraciones base para usar **Prometheus** como stack de monitoreo.
+
+---
+
+## 🧭 **Diagrama de la Solución**
+
+![Solution Diagram.png](assets/Solution%20Diagram.png)
+
+Este diagrama representa la arquitectura general de **MicroTodoSuite**, diseñada por **GaCode Solutions** para maximizar
+la escalabilidad, resiliencia y observabilidad del sistema en la nube.
+
+Cada microservicio se ejecuta de forma aislada en **Azure Container Apps**, con imágenes almacenadas de forma segura en
+**Azure Container Registry**. La infraestructura se define completamente mediante **Terraform**, que además utiliza *
+*Azure Storage** como backend remoto para mantener el estado de despliegue.
+
+La solución incorpora una arquitectura de observabilidad completa basada en **Prometheus**, **Grafana** y **Zipkin**,
+permitiendo monitoreo en tiempo real y rastreo distribuido de llamadas entre servicios. Se emplean patrones como **Retry
+** y **Circuit Breaker** para asegurar estabilidad y manejo de errores a nivel de red y servicios degradados. Redis se
+utiliza como sistema de mensajería para desacoplar procesos de logging asincrónico.
+
+> 📚 Puedes encontrar más detalles técnicos, decisiones de diseño y diagramas complementarios en el repositorio de
+> documentación:  
+> [`microservice-app-docs`](https://github.com/MicroTodoSuite/microservice-app-docs/blob/main/docs/Architecture%20diagrams.md)
 
 ---
 

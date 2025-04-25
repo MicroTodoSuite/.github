@@ -1,6 +1,6 @@
 {
-    "name": "Scrum - Equipo de Operaciones",
-    "body": "Gestión ágil del equipo de operaciones de MicroTodoSuite bajo metodología Scrum.",
+    "name": "Kanban - Equipo de Operaciones",
+    "body": "Gestión ágil del equipo de operaciones de MicroTodoSuite bajo metodología Kanban.",
     "fields": [
       {
         "name": "Sprint",
@@ -9,12 +9,12 @@
       {
         "name": "Tipo de Tarea",
         "data_type": "single_select",
-        "options": ["Historia", "Tarea Técnica", "Bug", "Historia Infra", "Spike"]
+        "options": ["Tarea Técnica", "Bug", "Historia Infra", "Spike"]
       },
       {
-        "name": "Estado Scrum",
+        "name": "Estado Kanban",
         "data_type": "single_select",
-        "options": ["Backlog", "Sprint Actual", "En Progreso", "En Revisión", "Bloqueado", "Completado"]
+        "options": ["En Progreso", "En Revisión", "Bloqueado", "Completado"]
       },
       {
         "name": "Prioridad",

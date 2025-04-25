@@ -46,20 +46,49 @@ La arquitectura se compone de los siguientes microservicios, todos desarrollados
 
 ## 📂 **Estructura de Repositorios**
 
-Para garantizar un desarrollo organizado y colaborativo, GaCode Solutions estructura los repositorios de la siguiente
-manera:
+En **GaCode Solutions**, apostamos por una arquitectura modular basada en múltiples repositorios, lo que permite una
+mayor autonomía, trazabilidad y escalabilidad en el ciclo de vida de cada componente.
 
-1. **`MicroTodoSuite/microservice-app-dev`** (GitHub Flow 🌿)  
-   Código fuente de los microservicios y la interfaz web.
-    - Flujo: ramas `feat/*` con Pull Requests hacia `main`.
+A continuación, se detallan los repositorios que componen el ecosistema de **MicroTodoSuite**:
 
-2. **`MicroTodoSuite/microservice-app-ops`** (Trunk-Based Development 🚀)  
-   Repositorio dedicado a la infraestructura como código en Terraform, orientado al aprovisionamiento automatizado en
-   Azure.
-    - Flujo: commits directos en `main` con revisión cruzada entre los ingenieros DevOps.
+### 🧱 **Repositorios de Aplicación (GitHub Flow 🌿)**
 
-3. **`MicroTodoSuite/microservice-app-docs`** (Wiki 📖)  
-   Repositorio de documentación técnica, diagramas de arquitectura y decisiones de diseño.
+Cada microservicio se mantiene de forma independiente para facilitar despliegues desacoplados y evolución por separado.
+
+| Repositorio                              | Descripción                                     |
+|------------------------------------------|-------------------------------------------------|
+| `microservice-app-auth-api`              | Servicio de autenticación (Go + JWT)            |
+| `microservice-app-todos-api`             | Gestión de tareas (Node.js)                     |
+| `microservice-app-users-api`             | Administración de usuarios (Java - Spring Boot) |
+| `microservice-app-frontend`              | Interfaz de usuario (Vue.js)                    |
+| `microservice-app-log-message-processor` | Procesador de logs del sistema (Python)         |
+
+> 🔄 **Flujo de trabajo:**  
+> Ramas `feat/*` → Pull Request → `main`. Cada cambio pasa por revisión antes de integrarse.
+
+---
+
+### 🛠 **Repositorio de Infraestructura (Trunk-Based Development 🚀)**
+
+- **`microservice-app-ops`**  
+  Contiene la infraestructura como código escrita en **Terraform**. Automatiza el aprovisionamiento en Microsoft Azure.
+
+> 🔁 **Flujo de trabajo:**  
+> Commits directos a `main`, bajo revisión colaborativa de los ingenieros DevOps.
+
+---
+
+### 📖 **Repositorio de Documentación**
+
+- **`microservice-app-docs`**  
+  Reúne documentación técnica, diagramas de arquitectura, decisiones de diseño y lineamientos de operación.
+
+---
+
+### 📊 **Repositorio de Observabilidad**
+
+- **`microservice-app-prometheus`**  
+  Contiene configuraciones base para usar **Prometheus** como stack de monitoreo.
 
 ---
 

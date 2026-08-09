@@ -31,6 +31,7 @@ jobs:
       service-name: auth-api
       language: go            # go | node | java | python
       sonar-project-key: MicroTodoSuite_auth-api
+      sonar-host-url: ${{ vars.SONAR_HOST_URL }}   # self-hosted SonarQube (both profiles)
     secrets: inherit
 ```
 
@@ -51,8 +52,16 @@ Never pin `@main`: an unreviewed edit would silently change every consumer.
 ## Gate configuration
 
 Active by default (no pre-existing artifacts needed): build, code-quality
-(SonarCloud, when `sonar-project-key` is set), image scan (Trivy), SBOM (Syft),
-signing (Cosign keyless).
+(self-hosted **SonarQube**, runs when both `sonar-project-key` and
+`sonar-host-url` are set), image scan (Trivy), SBOM (Syft), signing (Cosign
+keyless).
+
+Both profiles (economical and full) use self-hosted SonarQube (team decision,
+overrides plan §17). There is one SonarQube server for the org — CI is
+per-commit, not per-environment — so a single `SONAR_HOST_URL` serves every
+service. The server is a platform add-on (`infrastructure/sonarqube` in the
+GitOps repo); until it exists, leave `sonar-host-url` empty and the gate stays
+visibly skipped.
 
 Scaffolded but skipped by default (enable when the artifacts exist):
 `run-unit`, `run-integration`, `run-contract`, `run-e2e`, `run-perf`,
@@ -69,7 +78,9 @@ CI produces.
 
 ## Required org configuration (one-time)
 
-- `SONAR_TOKEN` — org secret for the code-quality gate.
+- `SONAR_TOKEN` — org secret (token of the self-hosted SonarQube) for the
+  code-quality gate; `SONAR_HOST_URL` — org/repo variable pointing at the
+  self-hosted SonarQube server.
 - A least-privilege promotion identity (GitHub App or fine-grained token) with
   `contents:write` + `pull_requests:write` on `microservice-app-gitops` only,
   exposed to `promote.yml` as `gitops-token`.

@@ -30,7 +30,14 @@ on:
         default: false
         type: boolean
       sonar-project-key:
-        description: SonarCloud project key; quality gate runs when set
+        description: SonarQube project key; quality gate runs when key + host are set
+        default: ""
+        type: string
+      sonar-host-url:
+        description: >
+          Self-hosted SonarQube server URL. Both profiles use self-hosted
+          SonarQube (team decision, overrides plan §17). Leave empty until the
+          server exists; the gate then activates by value alone.
         default: ""
         type: string
       run-unit:
@@ -85,16 +92,20 @@ jobs:
 
   # ---- Code-quality gate (active when a Sonar project key is supplied) ----
   quality:
-    if: ${{ inputs.sonar-project-key != '' }}
+    # Self-hosted SonarQube for both profiles: runs only when a project key AND
+    # a server URL are provided, so the gate stays skipped (visibly) until the
+    # SonarQube add-on exists, then activates by value alone.
+    if: ${{ inputs.sonar-project-key != '' && inputs.sonar-host-url != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: SonarCloud scan
+      - name: SonarQube scan (self-hosted)
         uses: SonarSource/sonarqube-scan-action@v4
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
         with:
           args: >
             -Dsonar.projectKey=${{ inputs.sonar-project-key }}

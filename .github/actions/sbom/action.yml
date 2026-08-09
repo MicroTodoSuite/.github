@@ -1,0 +1,30 @@
+name: sbom
+description: >
+  Generate a Software Bill of Materials (Syft, SPDX-JSON) for a built image
+  addressed by its immutable digest, and upload it as a build artifact
+  (spec 003, FR-019).
+
+inputs:
+  image-ref:
+    description: Image reference by digest (registry/name@sha256:...)
+    required: true
+  artifact-name:
+    description: Name for the uploaded SBOM artifact
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Generate SBOM (Syft)
+      uses: anchore/sbom-action@v0
+      with:
+        image: ${{ inputs.image-ref }}
+        format: spdx-json
+        output-file: sbom.spdx.json
+
+    - name: Upload SBOM
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: sbom.spdx.json
+        if-no-files-found: error

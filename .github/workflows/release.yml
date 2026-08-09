@@ -1,0 +1,51 @@
+name: release
+
+# Reusable release workflow (spec 003, D11). semantic-release computes the next
+# version and changelog from Conventional Commits. The version is metadata; the
+# image DIGEST from ci.yml remains the deployment identity.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        default: "22"
+        type: string
+    secrets:
+      release-token:
+        description: Token with contents+issues+PR write for release commits/tags
+        required: true
+    outputs:
+      released:
+        description: "true when a new version was published"
+        value: ${{ jobs.release.outputs.released }}
+      version:
+        description: The published version (empty if none)
+        value: ${{ jobs.release.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      released: ${{ steps.semrel.outputs.new_release_published }}
+      version: ${{ steps.semrel.outputs.new_release_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Install dependencies
+        run: npm ci
+      - name: Semantic Release
+        id: semrel
+        uses: cycjimmy/semantic-release-action@v4
+        env:
+          GITHUB_TOKEN: ${{ secrets.release-token }}

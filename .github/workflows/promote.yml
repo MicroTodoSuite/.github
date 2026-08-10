@@ -27,8 +27,11 @@ on:
         default: MicroTodoSuite/microservice-app-gitops
         type: string
     secrets:
-      gitops-token:
-        description: Least-privilege token (contents+PR write on the GitOps repo only)
+      gitops-app-id:
+        description: GitHub App ID of the gitops promoter App
+        required: true
+      gitops-app-key:
+        description: GitHub App private key (PEM) of the gitops promoter App
         required: true
 
 permissions:
@@ -60,11 +63,20 @@ jobs:
             >/dev/null \
             || { echo "::error::no valid signature for ${{ inputs.image-ref }} — refusing to promote"; exit 1; }
 
+      - name: Generate gitops token (GitHub App)
+        id: apptoken
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.gitops-app-id }}
+          private-key: ${{ secrets.gitops-app-key }}
+          owner: MicroTodoSuite
+          repositories: microservice-app-gitops
+
       - name: Checkout GitOps repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.gitops-repo }}
-          token: ${{ secrets.gitops-token }}
+          token: ${{ steps.apptoken.outputs.token }}
           path: gitops
           fetch-depth: 0
 
@@ -77,7 +89,7 @@ jobs:
       - name: Bump digest (digest-only helper, commits on a branch)
         working-directory: gitops
         env:
-          GH_TOKEN: ${{ secrets.gitops-token }}
+          GH_TOKEN: ${{ steps.apptoken.outputs.token }}
         run: |
           set -euo pipefail
           BR="promote/${{ inputs.service-name }}-${{ inputs.environment }}-${GITHUB_SHA::7}"
@@ -90,7 +102,7 @@ jobs:
       - name: Open pull request
         working-directory: gitops
         env:
-          GH_TOKEN: ${{ secrets.gitops-token }}
+          GH_TOKEN: ${{ steps.apptoken.outputs.token }}
         run: |
           set -euo pipefail
           BR="promote/${{ inputs.service-name }}-${{ inputs.environment }}-${GITHUB_SHA::7}"

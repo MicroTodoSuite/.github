@@ -1,0 +1,26 @@
+name: sign
+description: >
+  Sign a built image (by digest) with Cosign keyless signing via the workflow's
+  OIDC identity (Fulcio/Rekor). No long-lived key or static secret is used; the
+  signature is what a later Kyverno verifyImages policy will check (spec 003,
+  FR-019/FR-022). The calling job must grant `id-token: write`.
+
+inputs:
+  image-ref:
+    description: Image reference by digest (registry/name@sha256:...)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Cosign
+      uses: sigstore/cosign-installer@v3
+
+    - name: Sign (keyless)
+      shell: bash
+      env:
+        COSIGN_YES: "true"
+      run: |
+        set -euo pipefail
+        echo "signing ${{ inputs.image-ref }}"
+        cosign sign "${{ inputs.image-ref }}"

@@ -1,0 +1,101 @@
+name: promote
+
+# Reusable promotion workflow (spec 003). Opens a pull request against the GitOps
+# repo that bumps ONE environment overlay's image digest, using the repo's own
+# digest-only helper. It never mutates a cluster; ArgoCD reconciles the merge.
+# Rollback is a git revert of the resulting commit.
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        required: true
+        type: string
+      environment:
+        description: dev | staging | prod
+        required: true
+        type: string
+      image-digest:
+        description: sha256:<64hex> produced by ci.yml
+        required: true
+        type: string
+      image-ref:
+        description: registry/service@digest, used to verify provenance
+        required: true
+        type: string
+      gitops-repo:
+        default: MicroTodoSuite/microservice-app-gitops
+        type: string
+    secrets:
+      gitops-token:
+        description: Least-privilege token (contents+PR write on the GitOps repo only)
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  open-promotion-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate digest format
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${{ inputs.image-digest }}" =~ ^sha256:[a-f0-9]{64}$ ]] \
+            || { echo "::error::image-digest is not sha256:<64 hex>"; exit 1; }
+
+      # FR-011: never promote an artifact CI did not build+sign. Verify the
+      # keyless Cosign signature for this exact digest before opening the PR.
+      - name: Verify image signature (provenance)
+        uses: sigstore/cosign-installer@v3
+      - name: Cosign verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign verify "${{ inputs.image-ref }}" \
+            --certificate-identity-regexp 'https://github.com/MicroTodoSuite/.+' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            >/dev/null \
+            || { echo "::error::no valid signature for ${{ inputs.image-ref }} — refusing to promote"; exit 1; }
+
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops-repo }}
+          token: ${{ secrets.gitops-token }}
+          path: gitops
+          fetch-depth: 0
+
+      - name: Install kustomize
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Bump digest (digest-only helper, commits on a branch)
+        working-directory: gitops
+        env:
+          GH_TOKEN: ${{ secrets.gitops-token }}
+        run: |
+          set -euo pipefail
+          BR="promote/${{ inputs.service-name }}-${{ inputs.environment }}-${GITHUB_SHA::7}"
+          git config user.name "microtodo-ci[bot]"
+          git config user.email "ci@microtodosuite.local"
+          git checkout -b "$BR"
+          scripts/bump-image.sh "${{ inputs.service-name }}" "${{ inputs.environment }}" "${{ inputs.image-digest }}"
+          git push origin "$BR"
+
+      - name: Open pull request
+        working-directory: gitops
+        env:
+          GH_TOKEN: ${{ secrets.gitops-token }}
+        run: |
+          set -euo pipefail
+          BR="promote/${{ inputs.service-name }}-${{ inputs.environment }}-${GITHUB_SHA::7}"
+          TITLE="promote(${{ inputs.service-name }}): ${{ inputs.environment }} -> ${{ inputs.image-digest }}"
+          BODY=$(printf 'Automated promotion.\n\n- Service: %s\n- Environment: %s\n- Digest: %s\n\nRollback: git revert this commit.' \
+                 "${{ inputs.service-name }}" "${{ inputs.environment }}" "${{ inputs.image-digest }}")
+          gh pr create --repo "${{ inputs.gitops-repo }}" --head "$BR" --base main \
+            --title "$TITLE" --body "$BODY"

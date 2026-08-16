@@ -1,16 +1,14 @@
 name: ci
 
-# Reusable CI for every MicroTodoSuite service (spec 003). One definition,
-# consumed by a thin caller in each service repo. Build ONCE, address by
-# immutable digest, run the quality/supply-chain gates, and expose the digest so
-# the promotion workflow can open a GitOps pull request. This workflow never
-# mutates a cluster.
+# Build and verify once, publish only a reviewed main revision, and expose the
+# immutable ECR digest consumed by GitOps. No workflow in this repository
+# mutates a Kubernetes cluster.
 
 on:
   workflow_call:
     inputs:
       service-name:
-        description: Service identity; matches apps/<service> and the image name
+        description: Service identity; must match the neutral ECR repository suffix
         required: true
         type: string
       language:
@@ -21,251 +19,228 @@ on:
         description: Path to the Dockerfile
         default: Dockerfile
         type: string
-      registry:
-        description: Image destination (GHCR now; ECR later by value change)
-        default: ghcr.io/microtodosuite
+      test-command:
+        description: Exact repository-owned test command
+        required: true
         type: string
-      cloud-enabled:
-        description: Enable OIDC-to-AWS + ECR push (inactive until task 1)
-        default: false
-        type: boolean
+      source-audit-command:
+        description: Optional lockfile or source dependency audit command
+        default: ""
+        type: string
+      ecr-repository:
+        description: Exact environment-neutral ECR repository URI
+        required: true
+        type: string
+      publisher-role-arn:
+        description: Terraform-owned GitHub OIDC publisher role ARN
+        required: true
+        type: string
+      aws-region:
+        description: AWS region containing the neutral repositories
+        default: us-east-1
+        type: string
       sonar-project-key:
-        description: SonarQube project key; quality gate runs when key + host are set
+        description: SonarQube project key; quality runs when key, host, and token are configured
         default: ""
         type: string
       sonar-host-url:
-        description: >
-          Self-hosted SonarQube server URL. Both profiles use self-hosted
-          SonarQube (team decision, overrides plan §17). Leave empty until the
-          server exists; the gate then activates by value alone.
+        description: Self-hosted SonarQube URL
         default: ""
         type: string
-      run-unit:
-        default: false
-        type: boolean
-      run-integration:
-        default: false
-        type: boolean
-      run-contract:
-        default: false
-        type: boolean
-      run-e2e:
-        default: false
-        type: boolean
-      run-perf:
-        default: false
-        type: boolean
-      run-dast:
-        default: false
-        type: boolean
     secrets:
       SONAR_TOKEN:
         required: false
     outputs:
       image-digest:
-        description: sha256 digest of the built manifest
-        value: ${{ jobs.build.outputs.digest }}
+        description: sha256 digest published by an eligible main run
+        value: ${{ jobs.supply-chain.outputs.digest }}
       image-ref:
-        description: registry/service@digest
-        value: ${{ jobs.build.outputs.ref }}
+        description: environment-neutral ECR repository at the immutable digest
+        value: ${{ jobs.supply-chain.outputs.ref }}
 
 permissions:
   contents: read
 
 jobs:
-  # ---- Unit tests (skippable: no suites exist yet) ------------------------
-  unit:
-    if: ${{ inputs.run-unit }}
+  supply-chain:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      digest: ${{ steps.resolve.outputs.digest }}
+      ref: ${{ steps.resolve.outputs.ref }}
+    env:
+      LOCAL_IMAGE: ${{ inputs.ecr-repository }}:${{ github.sha }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: MicroTodoSuite/.github/.github/actions/setup-stack@v1
-        with:
-          language: ${{ inputs.language }}
-      - name: Run unit tests (fail if enabled but none exist)
+      - name: Validate immutable publication inputs
         shell: bash
+        env:
+          SERVICE_NAME: ${{ inputs.service-name }}
+          ECR_REPOSITORY: ${{ inputs.ecr-repository }}
+          AWS_REGION_INPUT: ${{ inputs.aws-region }}
         run: |
           set -euo pipefail
-          echo "::error::run-unit=true but no unit test suite is wired for ${{ inputs.service-name }}"
-          echo "Author tests and implement this step before enabling the gate (FR-017)."
+          case "$SERVICE_NAME" in
+            auth-api|todos-api|users-api|frontend|log-message-processor) ;;
+            *) echo "::error::unsupported service-name: $SERVICE_NAME"; exit 1 ;;
+          esac
+          expected="995253610162.dkr.ecr.${AWS_REGION_INPUT}.amazonaws.com/microtodosuite/${SERVICE_NAME}"
+          [[ "$ECR_REPOSITORY" == "$expected" ]] || {
+            echo "::error::ecr-repository must be the exact neutral repository $expected"
+            exit 1
+          }
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        if: ${{ inputs.language == 'go' }}
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.6"
+
+      - name: Set up Node.js
+        if: ${{ inputs.language == 'node' }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Set up Java
+        if: ${{ inputs.language == 'java' }}
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Python
+        if: ${{ inputs.language == 'python' }}
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Reject unsupported language
+        if: ${{ !contains(fromJSON('["go","node","java","python"]'), inputs.language) }}
+        shell: bash
+        run: |
+          echo "::error::unsupported language '${{ inputs.language }}' (expected go|node|java|python)"
           exit 1
 
-  # ---- Code-quality gate (active when a Sonar project key is supplied) ----
-  quality:
-    # Self-hosted SonarQube for both profiles: runs only when a project key AND
-    # a server URL are provided, so the gate stays skipped (visibly) until the
-    # SonarQube add-on exists, then activates by value alone.
-    if: ${{ inputs.sonar-project-key != '' && inputs.sonar-host-url != '' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: SonarQube scan (self-hosted)
-        uses: SonarSource/sonarqube-scan-action@v4
+      - name: Run source dependency audit
+        if: ${{ inputs.source-audit-command != '' }}
+        shell: bash
+        run: ${{ inputs.source-audit-command }}
+
+      - name: Run repository tests
+        shell: bash
+        run: ${{ inputs.test-command }}
+
+      - name: SonarQube quality gate
+        if: ${{ inputs.sonar-project-key != '' && inputs.sonar-host-url != '' }}
+        uses: SonarSource/sonarqube-scan-action@689fb39b34b9aa95ebc5f8f119343ddd51542402 # v4
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
         with:
-          args: >
-            -Dsonar.projectKey=${{ inputs.sonar-project-key }}
+          args: -Dsonar.projectKey=${{ inputs.sonar-project-key }}
 
-  # ---- Build ONCE, push by digest ----------------------------------------
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
-      ref: ${{ inputs.registry }}/${{ inputs.service-name }}@${{ steps.build.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Cloud legs: inactive until roadmap task 1 delivers the OIDC role + ECR.
-      - name: Configure AWS credentials (OIDC)
-        if: ${{ inputs.cloud-enabled }}
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: Log in to Amazon ECR
-        if: ${{ inputs.cloud-enabled }}
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build and push (digest is the identity)
-        id: build
-        uses: docker/build-push-action@v6
+      - name: Build image once locally
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ${{ inputs.dockerfile }}
-          push: true
-          # Immutable git-sha handle only; promotion uses the digest, never a
-          # moving tag and never `latest` (FR-006).
-          tags: ${{ inputs.registry }}/${{ inputs.service-name }}:${{ github.sha }}
+          load: true
+          tags: ${{ env.LOCAL_IMAGE }}
           provenance: false
 
-  # ---- Image vulnerability scan (active, blocking) -----------------------
-  image-scan:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - name: Scan the exact local image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Trivy scan (blocking on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          image-ref: ${{ needs.build.outputs.ref }}
+          image-ref: ${{ env.LOCAL_IMAGE }}
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          version: v0.72.0
 
-  # ---- Supply-chain evidence (active) ------------------------------------
-  sbom:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - name: Generate the exact local image SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: MicroTodoSuite/.github/.github/actions/sbom@v1
+          image: ${{ env.LOCAL_IMAGE }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Retain SBOM evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          image-ref: ${{ needs.build.outputs.ref }}
-          artifact-name: sbom-${{ inputs.service-name }}
+          name: sbom-${{ inputs.service-name }}-${{ github.sha }}
+          path: sbom.spdx.json
+          if-no-files-found: error
+          retention-days: 30
 
-  sign:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-    steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - name: Validate reviewed-main publication boundary
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository_owner == 'MicroTodoSuite' }}
+        shell: bash
+        env:
+          PUBLISHER_ROLE_ARN: ${{ inputs.publisher-role-arn }}
+        run: |
+          set -euo pipefail
+          [[ "$PUBLISHER_ROLE_ARN" =~ ^arn:aws:iam::995253610162:role/microtodosuite-github-ecr-publisher$ ]] || {
+            echo "::error::publisher-role-arn is not the Terraform-owned publisher role"
+            exit 1
+          }
+
+      - name: Configure AWS credentials through GitHub OIDC
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository_owner == 'MicroTodoSuite' }}
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: MicroTodoSuite/.github/.github/actions/sign@v1
-        with:
-          image-ref: ${{ needs.build.outputs.ref }}
+          role-to-assume: ${{ inputs.publisher-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
 
-  # ---- Skippable test gates (scaffolded; no artifacts yet) ---------------
-  integration:
-    if: ${{ inputs.run-integration }}
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Integration (fail if enabled but not wired)
-        shell: bash
-        run: |
-          echo "::error::run-integration=true but Testcontainers suite is not wired (FR-017)"
-          exit 1
+      - name: Log in to Amazon ECR
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository_owner == 'MicroTodoSuite' }}
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
 
-  contract:
-    if: ${{ inputs.run-contract }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Contract (fail if enabled but not wired)
+      - name: Push the already-tested image once
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository_owner == 'MicroTodoSuite' }}
         shell: bash
-        run: |
-          echo "::error::run-contract=true but no OpenAPI/AsyncAPI contract + Spectral/Pact suite exists (FR-017)"
-          exit 1
+        run: docker push "$LOCAL_IMAGE"
 
-  e2e:
-    if: ${{ inputs.run-e2e }}
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: E2E (fail if enabled but not wired)
+      - name: Resolve the immutable ECR digest
+        id: resolve
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository_owner == 'MicroTodoSuite' }}
         shell: bash
+        env:
+          ECR_REPOSITORY: ${{ inputs.ecr-repository }}
+          AWS_REGION_INPUT: ${{ inputs.aws-region }}
         run: |
-          echo "::error::run-e2e=true but no Cypress/Playwright suite exists (FR-017)"
-          exit 1
+          set -euo pipefail
+          repository_name="${ECR_REPOSITORY#*/}"
+          digest="$(aws ecr describe-images \
+            --region "$AWS_REGION_INPUT" \
+            --repository-name "$repository_name" \
+            --image-ids "imageTag=$GITHUB_SHA" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+            echo "::error::ECR did not return an immutable sha256 digest"
+            exit 1
+          }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "ref=${ECR_REPOSITORY}@${digest}" >> "$GITHUB_OUTPUT"
 
-  perf:
-    if: ${{ inputs.run-perf }}
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Performance (fail if enabled but not wired)
-        shell: bash
-        run: |
-          echo "::error::run-perf=true but no Locust scenario exists (FR-017)"
-          exit 1
+      - name: Install Cosign
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository_owner == 'MicroTodoSuite' }}
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
-  dast:
-    if: ${{ inputs.run-dast }}
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: DAST (fail if enabled but not wired)
+      - name: Attach SBOM and keylessly sign the immutable digest
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository_owner == 'MicroTodoSuite' }}
         shell: bash
+        env:
+          IMAGE_REF: ${{ steps.resolve.outputs.ref }}
+          COSIGN_YES: "true"
         run: |
-          echo "::error::run-dast=true but no OWASP ZAP scan is wired (FR-017)"
-          exit 1
+          set -euo pipefail
+          cosign attest --predicate sbom.spdx.json --type spdxjson "$IMAGE_REF"
+          cosign sign "$IMAGE_REF"

@@ -1,0 +1,63 @@
+name: stack-tests
+
+# Reusable stack-level test gate (spec 007): brings up the caller's docker-compose
+# stack, runs a provided command (Playwright e2e, Locust performance, or OWASP ZAP
+# DAST), and always tears the stack down. Kept central so no repo copy-pastes this
+# orchestration; the caller supplies only the compose file and the command.
+
+on:
+  workflow_call:
+    inputs:
+      gate-name:
+        description: Human-readable gate label (e2e | performance | dast)
+        required: true
+        type: string
+      compose-file:
+        description: Path to the docker-compose file that brings up the stack
+        default: compose.yaml
+        type: string
+      stack-command:
+        description: Command that runs the gate against the running stack
+        required: true
+        type: string
+      ready-command:
+        description: Optional command that blocks until the stack is healthy
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  stack-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Bring up the stack
+        shell: bash
+        run: docker compose -f "${{ inputs.compose-file }}" up -d --build
+
+      - name: Wait for readiness
+        if: ${{ inputs.ready-command != '' }}
+        shell: bash
+        run: ${{ inputs.ready-command }}
+
+      - name: Run ${{ inputs.gate-name }} gate
+        shell: bash
+        run: ${{ inputs.stack-command }}
+
+      - name: Tear down the stack
+        if: ${{ always() }}
+        shell: bash
+        run: docker compose -f "${{ inputs.compose-file }}" down -v

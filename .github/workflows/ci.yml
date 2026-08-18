@@ -27,6 +27,13 @@ on:
         description: Optional lockfile or source dependency audit command
         default: ""
         type: string
+      contract-command:
+        description: >
+          Optional contract gate command (spec 007): OpenAPI/AsyncAPI lint +
+          conformance + Pact. Runs on Node regardless of service language and
+          gates publication. Value-activated: when set, it must pass.
+        default: ""
+        type: string
       ecr-repository:
         description: Exact environment-neutral ECR repository URI
         required: true
@@ -133,6 +140,18 @@ jobs:
       - name: Run repository tests
         shell: bash
         run: ${{ inputs.test-command }}
+
+      # ---- Contract gate (spec 007): value-activated, gates publication -------
+      - name: Set up Node for contract tooling
+        if: ${{ inputs.contract-command != '' }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Run contract checks (OpenAPI/AsyncAPI lint + conformance + Pact)
+        if: ${{ inputs.contract-command != '' }}
+        shell: bash
+        run: ${{ inputs.contract-command }}
 
       - name: SonarQube quality gate
         if: ${{ inputs.sonar-project-key != '' && inputs.sonar-host-url != '' }}

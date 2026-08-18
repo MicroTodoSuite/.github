@@ -73,7 +73,12 @@ permissions:
   contents: read
 
 jobs:
-  # ---- Unit tests (skippable: no suites exist yet) ------------------------
+  # ---- Unit tests -------------------------------------------------------
+  # Convention-based activation (spec 006): a service enables the gate by
+  # authoring `ci/unit.sh` (its native runner + coverage) and flipping
+  # `run-unit: true`. The reusable structure never changes per stack; a gate
+  # turned on without its artifact fails visibly (FR-012). setup-stack provides
+  # the toolchain; the per-repo script owns the "how".
   unit:
     if: ${{ inputs.run-unit }}
     runs-on: ubuntu-latest
@@ -82,13 +87,16 @@ jobs:
       - uses: MicroTodoSuite/.github/.github/actions/setup-stack@v1
         with:
           language: ${{ inputs.language }}
-      - name: Run unit tests (fail if enabled but none exist)
+      - name: Run unit suite (fail visibly if enabled but no artifact)
         shell: bash
         run: |
           set -euo pipefail
-          echo "::error::run-unit=true but no unit test suite is wired for ${{ inputs.service-name }}"
-          echo "Author tests and implement this step before enabling the gate (FR-017)."
-          exit 1
+          if [ ! -f ci/unit.sh ]; then
+            echo "::error::run-unit=true but ci/unit.sh is missing for ${{ inputs.service-name }}"
+            echo "Author the unit suite and add ci/unit.sh before enabling the gate (FR-012)."
+            exit 1
+          fi
+          bash ci/unit.sh
 
   # ---- Code-quality gate (active when a Sonar project key is supplied) ----
   quality:
@@ -215,57 +223,106 @@ jobs:
         with:
           image-ref: ${{ needs.build.outputs.ref }}
 
-  # ---- Skippable test gates (scaffolded; no artifacts yet) ---------------
+  # ---- Convention-based test gates (spec 006) ----------------------------
+  # Each gate runs the service's `ci/<gate>.sh` entrypoint when its switch is
+  # on; a missing script fails visibly (enabled-but-empty, FR-012). Per-service
+  # order is unit -> contract -> integration -> e2e/perf/dast; a service only
+  # ships the scripts it has authored.
   integration:
     if: ${{ inputs.run-integration }}
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Integration (fail if enabled but not wired)
+      - uses: actions/checkout@v4
+      - uses: MicroTodoSuite/.github/.github/actions/setup-stack@v1
+        with:
+          language: ${{ inputs.language }}
+      - name: Run integration suite (fail visibly if enabled but no artifact)
         shell: bash
         run: |
-          echo "::error::run-integration=true but Testcontainers suite is not wired (FR-017)"
-          exit 1
+          set -euo pipefail
+          if [ ! -f ci/integration.sh ]; then
+            echo "::error::run-integration=true but ci/integration.sh is missing for ${{ inputs.service-name }}"
+            echo "Author the integration suite and add ci/integration.sh before enabling the gate (FR-012)."
+            exit 1
+          fi
+          bash ci/integration.sh
 
   contract:
     if: ${{ inputs.run-contract }}
     runs-on: ubuntu-latest
     steps:
-      - name: Contract (fail if enabled but not wired)
+      - uses: actions/checkout@v4
+      - uses: MicroTodoSuite/.github/.github/actions/setup-stack@v1
+        with:
+          language: ${{ inputs.language }}
+      - name: Run contract suite (fail visibly if enabled but no artifact)
         shell: bash
         run: |
-          echo "::error::run-contract=true but no OpenAPI/AsyncAPI contract + Spectral/Pact suite exists (FR-017)"
-          exit 1
+          set -euo pipefail
+          if [ ! -f ci/contract.sh ]; then
+            echo "::error::run-contract=true but ci/contract.sh is missing for ${{ inputs.service-name }}"
+            echo "Author the OpenAPI/AsyncAPI contract + checks and add ci/contract.sh before enabling the gate (FR-012)."
+            exit 1
+          fi
+          bash ci/contract.sh
 
   e2e:
     if: ${{ inputs.run-e2e }}
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: E2E (fail if enabled but not wired)
+      - uses: actions/checkout@v4
+      - uses: MicroTodoSuite/.github/.github/actions/setup-stack@v1
+        with:
+          language: ${{ inputs.language }}
+      - name: Run e2e suite (fail visibly if enabled but no artifact)
         shell: bash
         run: |
-          echo "::error::run-e2e=true but no Cypress/Playwright suite exists (FR-017)"
-          exit 1
+          set -euo pipefail
+          if [ ! -f ci/e2e.sh ]; then
+            echo "::error::run-e2e=true but ci/e2e.sh is missing for ${{ inputs.service-name }}"
+            echo "Author the Cypress suite + stack and add ci/e2e.sh before enabling the gate (FR-012)."
+            exit 1
+          fi
+          bash ci/e2e.sh
 
   perf:
     if: ${{ inputs.run-perf }}
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Performance (fail if enabled but not wired)
+      - uses: actions/checkout@v4
+      - uses: MicroTodoSuite/.github/.github/actions/setup-stack@v1
+        with:
+          language: ${{ inputs.language }}
+      - name: Run performance suite (fail visibly if enabled but no artifact)
         shell: bash
         run: |
-          echo "::error::run-perf=true but no Locust scenario exists (FR-017)"
-          exit 1
+          set -euo pipefail
+          if [ ! -f ci/perf.sh ]; then
+            echo "::error::run-perf=true but ci/perf.sh is missing for ${{ inputs.service-name }}"
+            echo "Author the Locust scenario + baseline and add ci/perf.sh before enabling the gate (FR-012)."
+            exit 1
+          fi
+          bash ci/perf.sh
 
   dast:
     if: ${{ inputs.run-dast }}
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: DAST (fail if enabled but not wired)
+      - uses: actions/checkout@v4
+      - uses: MicroTodoSuite/.github/.github/actions/setup-stack@v1
+        with:
+          language: ${{ inputs.language }}
+      - name: Run DAST suite (fail visibly if enabled but no artifact)
         shell: bash
         run: |
-          echo "::error::run-dast=true but no OWASP ZAP scan is wired (FR-017)"
-          exit 1
+          set -euo pipefail
+          if [ ! -f ci/dast.sh ]; then
+            echo "::error::run-dast=true but ci/dast.sh is missing for ${{ inputs.service-name }}"
+            echo "Author the OWASP ZAP baseline and add ci/dast.sh before enabling the gate (FR-012)."
+            exit 1
+          fi
+          bash ci/dast.sh

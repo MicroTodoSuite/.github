@@ -16,7 +16,9 @@ runs:
       if: ${{ inputs.language == 'go' }}
       uses: actions/setup-go@v5
       with:
-        go-version: "1.23"
+        # 1.25: security-patched transitive deps (x/crypto, x/net, grpc) that
+        # clear the Trivy HIGH/CRITICAL gate now require Go >= 1.25 (spec 006).
+        go-version: "1.25"
 
     - name: Set up Node.js
       if: ${{ inputs.language == 'node' }}

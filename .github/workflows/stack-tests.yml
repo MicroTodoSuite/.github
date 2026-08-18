@@ -1,9 +1,11 @@
 name: stack-tests
 
 # Reusable stack-level test gate (spec 007): brings up the caller's docker-compose
-# stack, runs a provided command (Playwright e2e, Locust performance, or OWASP ZAP
-# DAST), and always tears the stack down. Kept central so no repo copy-pastes this
-# orchestration; the caller supplies only the compose file and the command.
+# stack — optionally alongside sibling service repos it builds from — runs a
+# provided command (Playwright e2e, Locust performance, or OWASP ZAP DAST), and
+# always tears the stack down. Kept central so no repo copy-pastes this
+# orchestration; the caller supplies the compose file, the command, and (for a
+# multi-service stack) the sibling repos to check out.
 
 on:
   workflow_call:
@@ -13,8 +15,8 @@ on:
         required: true
         type: string
       compose-file:
-        description: Path to the docker-compose file that brings up the stack
-        default: compose.yaml
+        description: Path to the compose file, relative to the caller repo root
+        default: e2e/compose.yaml
         type: string
       stack-command:
         description: Command that runs the gate against the running stack
@@ -24,6 +26,12 @@ on:
         description: Optional command that blocks until the stack is healthy
         default: ""
         type: string
+      stack-repos:
+        description: >
+          Optional space-separated sibling repo names (same org) to check out
+          next to the caller so the compose file can build them.
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -31,8 +39,26 @@ permissions:
 jobs:
   stack-tests:
     runs-on: ubuntu-latest
+    env:
+      CALLER_DIR: ${{ github.event.repository.name }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check out the caller repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: ${{ github.event.repository.name }}
+
+      - name: Check out sibling service repos
+        if: ${{ inputs.stack-repos != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          for repo in ${{ inputs.stack-repos }}; do
+            git clone --depth 1 \
+              "https://x-access-token:${GH_TOKEN}@github.com/${OWNER}/${repo}.git" "${repo}"
+          done
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -46,7 +72,7 @@ jobs:
 
       - name: Bring up the stack
         shell: bash
-        run: docker compose -f "${{ inputs.compose-file }}" up -d --build
+        run: docker compose -f "${CALLER_DIR}/${{ inputs.compose-file }}" up -d --build
 
       - name: Wait for readiness
         if: ${{ inputs.ready-command != '' }}
@@ -60,4 +86,4 @@ jobs:
       - name: Tear down the stack
         if: ${{ always() }}
         shell: bash
-        run: docker compose -f "${{ inputs.compose-file }}" down -v
+        run: docker compose -f "${CALLER_DIR}/${{ inputs.compose-file }}" down -v

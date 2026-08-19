@@ -26,6 +26,13 @@ on:
       gitops-repo:
         default: MicroTodoSuite/microservice-app-gitops
         type: string
+      publisher-role-arn:
+        description: OIDC role that can read ECR to verify the image signature
+        required: true
+        type: string
+      aws-region:
+        default: us-east-1
+        type: string
     secrets:
       gitops-app-id:
         description: GitHub App ID of the gitops promoter App
@@ -48,6 +55,16 @@ jobs:
           set -euo pipefail
           [[ "${{ inputs.image-digest }}" =~ ^sha256:[a-f0-9]{64}$ ]] \
             || { echo "::error::image-digest is not sha256:<64 hex>"; exit 1; }
+
+      # Cosign reads the signature artifact from the private ECR registry, so the
+      # job must authenticate to ECR (OIDC) before verifying.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.publisher-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
       # FR-011: never promote an artifact CI did not build+sign. Verify the
       # keyless Cosign signature for this exact digest before opening the PR.

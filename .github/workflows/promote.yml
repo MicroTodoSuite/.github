@@ -15,6 +15,19 @@ on:
         description: dev | staging | prod
         required: true
         type: string
+      profile:
+        description: >-
+          Runtime profile that owns the overlay. `economical` is the working
+          platform and stays the default so existing callers are unaffected.
+        default: economical
+        type: string
+      destination:
+        description: >-
+          Cluster the overlay is activated on. Together with profile and
+          environment this forms the tuple bump-image.sh validates, so a digest
+          can only ever land on a registered destination.
+        default: eks-dev
+        type: string
       image-digest:
         description: sha256:<64hex> produced by ci.yml
         required: true
@@ -97,11 +110,22 @@ jobs:
           path: gitops
           fetch-depth: 0
 
-      - name: Install kustomize
+      # Installed by checksum from the GitOps repo's own toolchain lock rather
+      # than by piping an unpinned installer from `master`: this job renders the
+      # manifest that decides what reaches a cluster.
+      - name: Install checksum-locked kustomize
+        working-directory: gitops
         run: |
           set -euo pipefail
-          curl -sSfL https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh | bash
-          sudo mv kustomize /usr/local/bin/
+          url="$(jq -er '.tools[] | select(.name == "kustomize") | .source' scripts/managed/full-profile-toolchain.lock)"
+          checksum="$(jq -er '.tools[] | select(.name == "kustomize") | .sha256' scripts/managed/full-profile-toolchain.lock)"
+          archive="$(mktemp)"
+          extract_dir="$(mktemp -d)"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location "$url" --output "$archive"
+          printf '%s  %s\n' "$checksum" "$archive" | sha256sum --check --strict -
+          tar -xzf "$archive" -C "$extract_dir" kustomize
+          sudo install -m 0755 "$extract_dir/kustomize" /usr/local/bin/kustomize
+          kustomize version
 
       - name: Bump digest (digest-only helper, commits on a branch)
         working-directory: gitops
@@ -109,11 +133,16 @@ jobs:
           GH_TOKEN: ${{ steps.apptoken.outputs.token }}
         run: |
           set -euo pipefail
-          BR="promote/${{ inputs.service-name }}-${{ inputs.environment }}-${GITHUB_SHA::7}"
+          BR="promote/${{ inputs.service-name }}-${{ inputs.profile }}-${{ inputs.environment }}-${GITHUB_SHA::7}"
           git config user.name "microtodo-ci[bot]"
           git config user.email "ci@microtodosuite.local"
           git checkout -b "$BR"
-          scripts/bump-image.sh "${{ inputs.service-name }}" "${{ inputs.environment }}" "${{ inputs.image-digest }}"
+          scripts/bump-image.sh \
+            "${{ inputs.service-name }}" \
+            "${{ inputs.environment }}" \
+            "${{ inputs.profile }}" \
+            "${{ inputs.destination }}" \
+            "${{ inputs.image-digest }}"
           git push origin "$BR"
 
       - name: Open pull request
@@ -122,9 +151,10 @@ jobs:
           GH_TOKEN: ${{ steps.apptoken.outputs.token }}
         run: |
           set -euo pipefail
-          BR="promote/${{ inputs.service-name }}-${{ inputs.environment }}-${GITHUB_SHA::7}"
-          TITLE="promote(${{ inputs.service-name }}): ${{ inputs.environment }} -> ${{ inputs.image-digest }}"
-          BODY=$(printf 'Automated promotion.\n\n- Service: %s\n- Environment: %s\n- Digest: %s\n\nRollback: git revert this commit.' \
-                 "${{ inputs.service-name }}" "${{ inputs.environment }}" "${{ inputs.image-digest }}")
+          BR="promote/${{ inputs.service-name }}-${{ inputs.profile }}-${{ inputs.environment }}-${GITHUB_SHA::7}"
+          TITLE="promote(${{ inputs.service-name }}): ${{ inputs.profile }}/${{ inputs.environment }} -> ${{ inputs.image-digest }}"
+          BODY=$(printf 'Automated promotion.\n\n- Service: %s\n- Profile: %s\n- Environment: %s\n- Destination: %s\n- Digest: %s\n\nRollback: git revert this commit.' \
+                 "${{ inputs.service-name }}" "${{ inputs.profile }}" "${{ inputs.environment }}" \
+                 "${{ inputs.destination }}" "${{ inputs.image-digest }}")
           gh pr create --repo "${{ inputs.gitops-repo }}" --head "$BR" --base main \
             --title "$TITLE" --body "$BODY"

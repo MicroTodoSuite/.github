@@ -92,7 +92,7 @@ jobs:
             auth-api|todos-api|users-api|frontend|log-message-processor) ;;
             *) echo "::error::unsupported service-name: $SERVICE_NAME"; exit 1 ;;
           esac
-          expected="916491575487.dkr.ecr.${AWS_REGION_INPUT}.amazonaws.com/microtodosuite/${SERVICE_NAME}"
+          expected="575172595729.dkr.ecr.${AWS_REGION_INPUT}.amazonaws.com/microtodosuite/${SERVICE_NAME}"
           [[ "$ECR_REPOSITORY" == "$expected" ]] || {
             echo "::error::ecr-repository must be the exact neutral repository $expected"
             exit 1
@@ -205,7 +205,7 @@ jobs:
           PUBLISHER_ROLE_ARN: ${{ inputs.publisher-role-arn }}
         run: |
           set -euo pipefail
-          [[ "$PUBLISHER_ROLE_ARN" =~ ^arn:aws:iam::916491575487:role/microtodosuite-github-ecr-publisher$ ]] || {
+          [[ "$PUBLISHER_ROLE_ARN" =~ ^arn:aws:iam::575172595729:role/microtodosuite-github-ecr-publisher$ ]] || {
             echo "::error::publisher-role-arn is not the Terraform-owned publisher role"
             exit 1
           }

@@ -34,7 +34,7 @@ require_literal "github.event_name == 'push'"
 require_literal "github.ref == 'refs/heads/main'"
 require_literal "github.repository_owner == 'MicroTodoSuite'"
 require_literal "microtodosuite-github-ecr-publisher"
-require_literal "916491575487.dkr.ecr."
+require_literal "575172595729.dkr.ecr."
 require_literal "amazonaws.com/microtodosuite/"
 
 grep -Eq '^[[:space:]]+uses: [^#]+@[0-9a-f]{40}([[:space:]]+#.*)?$' "$workflow" \

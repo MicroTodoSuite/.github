@@ -34,8 +34,15 @@ require_literal "github.event_name == 'push'"
 require_literal "github.ref == 'refs/heads/main'"
 require_literal "github.repository_owner == 'MicroTodoSuite'"
 require_literal "microtodosuite-github-ecr-publisher"
-require_literal "575172595729.dkr.ecr."
+require_literal 'vars.AWS_ACCOUNT_ID'
+require_literal ".dkr.ecr."
 require_literal "amazonaws.com/microtodosuite/"
+
+# The account is an organization variable, not a literal: a literal here is one
+# more file to find and edit the next time the account changes.
+if grep -Eq 'arn:aws:iam::[0-9]{12}:|[0-9]{12}\.dkr\.ecr\.' "$workflow"; then
+  fail "workflow pins a literal AWS account; read vars.AWS_ACCOUNT_ID instead"
+fi
 
 grep -Eq '^[[:space:]]+uses: [^#]+@[0-9a-f]{40}([[:space:]]+#.*)?$' "$workflow" \
   || fail "workflow does not contain immutable action references"

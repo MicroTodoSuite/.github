@@ -86,13 +86,18 @@ jobs:
           SERVICE_NAME: ${{ inputs.service-name }}
           ECR_REPOSITORY: ${{ inputs.ecr-repository }}
           AWS_REGION_INPUT: ${{ inputs.aws-region }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || {
+            echo "::error::organization variable AWS_ACCOUNT_ID must be the 12-digit AWS account"
+            exit 1
+          }
           case "$SERVICE_NAME" in
             auth-api|todos-api|users-api|frontend|log-message-processor) ;;
             *) echo "::error::unsupported service-name: $SERVICE_NAME"; exit 1 ;;
           esac
-          expected="575172595729.dkr.ecr.${AWS_REGION_INPUT}.amazonaws.com/microtodosuite/${SERVICE_NAME}"
+          expected="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION_INPUT}.amazonaws.com/microtodosuite/${SERVICE_NAME}"
           [[ "$ECR_REPOSITORY" == "$expected" ]] || {
             echo "::error::ecr-repository must be the exact neutral repository $expected"
             exit 1
@@ -203,9 +208,14 @@ jobs:
         shell: bash
         env:
           PUBLISHER_ROLE_ARN: ${{ inputs.publisher-role-arn }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          [[ "$PUBLISHER_ROLE_ARN" =~ ^arn:aws:iam::575172595729:role/microtodosuite-github-ecr-publisher$ ]] || {
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || {
+            echo "::error::organization variable AWS_ACCOUNT_ID must be the 12-digit AWS account"
+            exit 1
+          }
+          [[ "$PUBLISHER_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/microtodosuite-github-ecr-publisher" ]] || {
             echo "::error::publisher-role-arn is not the Terraform-owned publisher role"
             exit 1
           }

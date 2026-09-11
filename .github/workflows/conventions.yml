@@ -1,0 +1,39 @@
+name: pull request conventions
+
+on:
+  workflow_call:
+    inputs:
+      infrastructure:
+        description: Require documentation evidence for infrastructure changes
+        default: false
+        required: false
+        type: boolean
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate:
+    name: validate delivery conventions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the pinned convention validator
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: conventions-source
+          persist-credentials: false
+
+      - name: Validate pull request metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          INFRASTRUCTURE: ${{ inputs.infrastructure }}
+        run: python3 conventions-source/scripts/conventions/validate-pr.py

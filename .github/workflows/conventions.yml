@@ -1,6 +1,8 @@
 name: pull request conventions
 
 on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
   workflow_call:
     inputs:
       infrastructure:
@@ -35,5 +37,5 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
           PR_BODY: ${{ github.event.pull_request.body }}
-          INFRASTRUCTURE: ${{ inputs.infrastructure }}
+          INFRASTRUCTURE: ${{ inputs.infrastructure || false }}
         run: python3 conventions-source/scripts/conventions/validate-pr.py

@@ -227,6 +227,12 @@ expect_rule "a root backend with values fails" PC-IAC-008 repo "$l" --kind live
 l="$(fresh_live)"; sed -i '/backend "s3" {}/d' "$l/$root_rel/versions.tf"
 expect_rule "a root without a backend fails" PC-IAC-008 repo "$l" --kind live
 
+l="$(fresh_live)"; sed -i 's/backend "s3" {}/backend "local" {}/' "$l/$root_rel/versions.tf"
+expect_rule "a local backend outside the state root fails" PC-IAC-008 repo "$l" --kind live
+l="$(fresh_live)"; mkdir -p "$l/aws/environments/shd"; mv "$l/$root_rel" "$l/aws/environments/shd/state"
+sed -i 's/backend "s3" {}/backend "local" {\n    path = "terraform.tfstate"\n  }/' "$l/aws/environments/shd/state/versions.tf"
+expect_clean "the state root may bootstrap with a local backend" repo "$l" --kind live
+
 echo "== PC-IAC-010 protected resources"
 m="$(fresh_module)"; cat >>"$m/main.tf" <<'HCL'
 
@@ -277,6 +283,26 @@ variable "alert_webhook_url" {
 }
 HCL
 expect_rule "a secret-named variable without sensitive fails" PC-IAC-016 module "$m"
+
+m="$(fresh_module)"; cat >>"$m/variables.tf" <<'HCL'
+
+variable "enable_tooling_secrets" {
+  type        = bool
+  description = "Creates the tooling secret containers."
+  default     = false
+}
+
+variable "jwt_secret_arn" {
+  type        = string
+  description = "ARN of the secret that holds the JWT key."
+
+  validation {
+    condition     = startswith(var.jwt_secret_arn, "arn:")
+    error_message = "The value must be an ARN."
+  }
+}
+HCL
+expect_clean "a boolean switch or a secret's identifier needs no sensitive flag" module "$m"
 
 echo "== PC-IAC-017 remote state and exceptions"
 l="$(fresh_live)"; cat >>"$l/$root_rel/data.tf" <<'HCL'

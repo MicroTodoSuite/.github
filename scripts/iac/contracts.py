@@ -51,8 +51,10 @@ IDENTIFYING_NAME = re.compile(
     r"(^|_)(name|names|id|ids|arn|arns|cidr|cidrs|size|sizes|count|region|"
     r"account_id|zone|zones|domain|instance_type|instance_types)$"
 )
-# PC-IAC-016: inputs whose name says they carry a secret.
+# PC-IAC-016: inputs whose name says they carry a secret. A boolean, or a name
+# that ends in an identifier of the secret, cannot carry the secret itself.
 SECRET_NAME = re.compile(r"(password|secret|token|webhook|private_key|api_key)")
+SECRET_IDENTIFIER = re.compile(r"_(arn|arns|id|ids|name|names|version|versions)$")
 # PC-IAC-003: HCL identifiers.
 SNAKE_CASE = re.compile(r"^[a-z][a-z0-9_]*$")
 # PC-IAC-007: what an output name ends in; the project adds the attribute kinds
@@ -297,7 +299,9 @@ class Checker:
             if "default" in body and _identifies_or_sizes(name, type_text, body["default"]):
                 self.add("PC-IAC-002", where, address,
                          "a variable that identifies or sizes infrastructure takes no default")
-            if SECRET_NAME.search(name) and not is_true(body.get("sensitive")):
+            carries_secret = (SECRET_NAME.search(name) and type_text != "bool"
+                              and not SECRET_IDENTIFIER.search(name))
+            if carries_secret and not is_true(body.get("sensitive")):
                 self.add("PC-IAC-016", where, address,
                          "a variable whose name marks a secret must set sensitive = true")
         for name in GOVERNANCE_VARIABLES:
@@ -559,6 +563,9 @@ def check_root(checker: Checker, directory: Path) -> None:
     if not backends:
         checker.add("PC-IAC-008", directory, "terraform.backend", "a root declares a partial backend block")
     for filename, kind, body in backends:
+        # PC-IAC-008 adaptation: the state root bootstraps the bucket on local state.
+        if kind == "local" and directory.name == "state":
+            continue
         if kind not in ("s3", "azurerm"):
             checker.add("PC-IAC-008", directory, f"backend.{kind}", "AWS roots use s3 and Azure roots azurerm")
         if attributes(body):

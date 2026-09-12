@@ -1,0 +1,51 @@
+name: infrastructure-as-code checks self-test
+
+# Proves the contracts by mutation and runs the reusable gate, at this commit,
+# against the fixture module repository.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/iac-checks.yml"
+      - ".github/workflows/iac-checks-self-test.yml"
+      - "scripts/iac/**"
+      - "tests/iac-contracts.sh"
+      - "tests/fixtures/iac/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/iac-checks.yml"
+      - "scripts/iac/**"
+      - "tests/iac-contracts.sh"
+      - "tests/fixtures/iac/**"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-tests:
+    name: contract tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install the hash-pinned contract dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/iac-venv"
+          "$RUNNER_TEMP/iac-venv/bin/pip" install --quiet --require-hashes -r scripts/iac/requirements.txt
+
+      - name: Run the contract tests
+        env:
+          IAC_CONTRACTS_PYTHON: ${{ runner.temp }}/iac-venv/bin/python
+        run: bash tests/iac-contracts.sh
+
+  gate-on-fixtures:
+    name: gate on the fixture module repository
+    uses: ./.github/workflows/iac-checks.yml
+    with:
+      kind: modules
+      working-directory: tests/fixtures/iac/modules

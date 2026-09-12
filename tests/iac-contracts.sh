@@ -320,8 +320,9 @@ printf '{"module_owners": {"queue": ["aws_iam_role"]}}\n' >"$work/owners.json"
 expect_clean "a declared owner may create the type" module "$m" --config "$work/owners.json"
 
 echo "== PC-IAC-025 names built in the root"
+m="$(fresh_module)"
 # shellcheck disable=SC2016 # the HCL interpolation is written literally on purpose
-m="$(fresh_module)"; sed -i 's/  name = var.queue.name/  name = "${var.client}-${var.project}-${var.environment}-sqs-main"/' "$m/main.tf"
+sed -i 's/  name = var.queue.name/  name = "${var.client}-${var.project}-${var.environment}-sqs-main"/' "$m/main.tf"
 expect_rule "a module assembling a name from governance variables fails" PC-IAC-025 module "$m"
 
 echo "== PC-IAC-026 sample"

@@ -1,0 +1,36 @@
+name: platform image mirror self-test
+
+# Runs the mirror workflow's contract test on every change to the workflow or
+# its test, the same self-test pattern as iac-checks-self-test.yml. The mirror
+# workflow itself needs a live AWS mirror role and the platform ECR repository
+# (spec 009 Phase 4), so it cannot run in CI; this proves its contract holds at
+# the same commit.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/mirror-platform-images.yml"
+      - ".github/workflows/mirror-platform-images-self-test.yml"
+      - "tests/workflows/mirror-platform-images.bats"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mirror-platform-images.yml"
+      - "tests/workflows/mirror-platform-images.bats"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-test:
+    name: contract test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run the mirror workflow contract test
+        run: bash tests/workflows/mirror-platform-images.bats

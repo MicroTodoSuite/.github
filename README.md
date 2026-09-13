@@ -11,6 +11,7 @@ spec `003-reusable-cicd-delivery` in `microservice-app-gitops`).
 | `.github/workflows/ci.yml` | Build once → quality/scan/SBOM/sign → output the image digest |
 | `.github/workflows/release.yml` | semantic-release: version + changelog |
 | `.github/workflows/promote.yml` | Open a digest-bump PR to the GitOps repo (dev/staging/prod) |
+| `.github/workflows/iac-checks.yml` | Gate a Terraform repository: rule contracts, `terraform fmt`/`validate`/`test`, tflint, Trivy |
 
 Composite actions: `.github/actions/{setup-stack,sbom,sign}`.
 
@@ -86,3 +87,37 @@ CI produces.
   exposed to `promote.yml` as `gitops-token`.
 - `AWS_CI_ROLE_ARN` / `AWS_REGION` repo/org variables — only when activating the
   cloud legs.
+
+## Infrastructure-as-code checks
+
+`iac-checks.yml` is the gate every Terraform repository calls on its pull
+requests. It enforces the rules in `microservice-app-ai-agents/rules/iac/`:
+
+| Job | What it runs |
+| --- | --- |
+| rule contracts | `scripts/iac/contracts.py repo . --kind modules\|live`, at the same commit as the workflow |
+| terraform | `terraform fmt -check`, then `terraform test` in each module, `terraform validate` in each sample, and `validate` plus `test` in each live root, with the version from `.terraform-version` |
+| tflint | tflint with the AWS ruleset, from `.tflint.hcl` or `scripts/iac/tflint.hcl` |
+| trivy | `trivy config`, failing on HIGH and CRITICAL misconfigurations |
+
+```yaml
+# .github/workflows/iac-checks.yml in a Terraform repository
+name: iac-checks
+on:
+  pull_request: { branches: [main] }
+permissions:
+  contents: read
+jobs:
+  iac:
+    uses: MicroTodoSuite/.github/.github/workflows/iac-checks.yml@<commit-sha>
+    with:
+      kind: modules          # or live
+```
+
+tflint and Trivy are downloaded by version and verified by SHA-256; the
+contracts' Python dependencies are installed from `scripts/iac/requirements.txt`
+with `--require-hashes`. Before an apply, `contracts.py plan <plan.json>
+--client lex --project mts --domain <domain>` checks the saved plan's names,
+tags, and domain (PC-IAC-003, PC-IAC-004, PC-IAC-022). A finding is waived only
+by a row in the repository's `docs/iac-exceptions.md` with a reason and an
+expiry. `tests/iac-contracts.sh` proves each contract by mutation.

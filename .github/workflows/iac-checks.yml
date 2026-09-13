@@ -1,0 +1,195 @@
+name: infrastructure-as-code checks
+
+# Reusable gate for every Terraform repository (PC-IAC-018, MTS-IAC-102). It runs
+# the rule contracts of scripts/iac/contracts.py at the same commit as this
+# workflow, terraform fmt, validate, and test, tflint, and a Trivy
+# misconfiguration scan that fails on HIGH and CRITICAL findings.
+#
+# Callers pin this workflow by full commit SHA:
+#   uses: MicroTodoSuite/.github/.github/workflows/iac-checks.yml@<sha>
+#   with:
+#     kind: modules   # or live
+
+on:
+  workflow_call:
+    inputs:
+      kind:
+        description: "modules for a module repository, live for a repository of Terraform roots"
+        required: true
+        type: string
+      working-directory:
+        description: Directory holding the modules or roots, relative to the repository root
+        default: "."
+        type: string
+      terraform-version-file:
+        description: File, relative to working-directory, that holds the exact Terraform version (PC-IAC-006)
+        default: .terraform-version
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  TFLINT_VERSION: 0.64.0
+  TFLINT_SHA256: cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537
+  TRIVY_VERSION: 0.74.0
+  TRIVY_SHA256: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+
+jobs:
+  contracts:
+    name: rule contracts
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out the contracts at this workflow's commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .iac-checks
+          persist-credentials: false
+
+      - name: Move the contracts outside the scanned tree
+        run: mv .iac-checks "$RUNNER_TEMP/iac-checks"
+
+      - name: Validate the inputs
+        env:
+          KIND: ${{ inputs.kind }}
+        run: |
+          case "$KIND" in
+            modules|live) ;;
+            *) echo "::error::kind must be modules or live, not '$KIND'"; exit 1 ;;
+          esac
+
+      - name: Install the hash-pinned contract dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/iac-venv"
+          "$RUNNER_TEMP/iac-venv/bin/pip" install --quiet --require-hashes \
+            -r "$RUNNER_TEMP/iac-checks/scripts/iac/requirements.txt"
+
+      - name: Run the rule contracts
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          KIND: ${{ inputs.kind }}
+        run: |
+          "$RUNNER_TEMP/iac-venv/bin/python" "$RUNNER_TEMP/iac-checks/scripts/iac/contracts.py" \
+            repo . --kind "$KIND"
+
+  terraform:
+    name: terraform fmt, validate, and test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out the contracts at this workflow's commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .iac-checks
+          persist-credentials: false
+
+      - name: Move the contracts outside the scanned tree
+        run: mv .iac-checks "$RUNNER_TEMP/iac-checks"
+
+      - name: Read the Terraform version
+        id: version
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          VERSION_FILE: ${{ inputs.terraform-version-file }}
+        run: |
+          version="$(tr -d '[:space:]' < "$VERSION_FILE")"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$VERSION_FILE must hold one exact Terraform version"
+            exit 1
+          fi
+          echo "terraform=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ steps.version.outputs.terraform }}
+          terraform_wrapper: false
+
+      - name: Check formatting
+        working-directory: ${{ inputs.working-directory }}
+        run: terraform fmt -check -recursive -diff
+
+      - name: Validate and test every module or root
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          KIND: ${{ inputs.kind }}
+        run: bash "$RUNNER_TEMP/iac-checks/scripts/iac/terraform-checks.sh" "$KIND"
+
+  tflint:
+    name: tflint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out the contracts at this workflow's commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .iac-checks
+          persist-credentials: false
+
+      - name: Move the contracts outside the scanned tree
+        run: mv .iac-checks "$RUNNER_TEMP/iac-checks"
+
+      - name: Install tflint by checksum
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSLo "$RUNNER_TEMP/tflint.zip" \
+            "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip"
+          echo "${TFLINT_SHA256}  $RUNNER_TEMP/tflint.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/tflint.zip" -d "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Select the configuration and initialize its rulesets
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          config="$PWD/.tflint.hcl"
+          [ -f "$config" ] || config="$RUNNER_TEMP/iac-checks/scripts/iac/tflint.hcl"
+          echo "Using $config"
+          echo "TFLINT_CONFIG=$config" >> "$GITHUB_ENV"
+          tflint --init --config "$config"
+
+      - name: Lint every directory
+        working-directory: ${{ inputs.working-directory }}
+        run: tflint --recursive --config "$TFLINT_CONFIG" --format compact
+
+  trivy:
+    name: trivy misconfiguration scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Trivy by checksum
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSLo "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP/bin" trivy
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Fail on HIGH and CRITICAL misconfigurations
+        working-directory: ${{ inputs.working-directory }}
+        run: trivy config --severity HIGH,CRITICAL --exit-code 1 --skip-dirs .git .

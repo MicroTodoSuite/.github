@@ -1,0 +1,97 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.15.8",
+  "resource_changes": [
+    {
+      "address": "module.queue.aws_sqs_queue.this",
+      "module_address": "module.queue",
+      "mode": "managed",
+      "type": "aws_sqs_queue",
+      "name": "this",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "name": "lex-mts-fdev-sqs-events",
+          "name_prefix": null,
+          "tags": {"Name": "lex-mts-fdev-sqs-events"},
+          "tags_all": {
+            "Name": "lex-mts-fdev-sqs-events",
+            "Client": "lex",
+            "Project": "mts",
+            "Environment": "fdev",
+            "Owner": "infrastructure",
+            "CostCenter": "mts-full",
+            "ManagedBy": "terraform",
+            "Repository": "microservice-app-ops"
+          }
+        },
+        "after_unknown": {"arn": true, "url": true}
+      }
+    },
+    {
+      "address": "aws_cloudwatch_log_group.cluster",
+      "mode": "managed",
+      "type": "aws_cloudwatch_log_group",
+      "name": "cluster",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "name": "/aws/eks/lex-mts-fdev-eks-main/cluster",
+          "name_prefix": null,
+          "tags": {"Name": "lex-mts-fdev-cwl-eksmain"},
+          "tags_all": {
+            "Name": "lex-mts-fdev-cwl-eksmain",
+            "Client": "lex",
+            "Project": "mts",
+            "Environment": "fdev",
+            "Owner": "infrastructure",
+            "CostCenter": "mts-full",
+            "ManagedBy": "terraform",
+            "Repository": "microservice-app-ops"
+          }
+        },
+        "after_unknown": {"arn": true}
+      }
+    },
+    {
+      "address": "aws_s3_bucket.state",
+      "mode": "managed",
+      "type": "aws_s3_bucket",
+      "name": "state",
+      "change": {
+        "actions": ["no-op"],
+        "before": null,
+        "after": {
+          "bucket": "lex-mts-shd-s3-tfstate-123456789012",
+          "bucket_prefix": null,
+          "tags": {"Name": "lex-mts-shd-s3-tfstate"},
+          "tags_all": {
+            "Name": "lex-mts-shd-s3-tfstate",
+            "Client": "lex",
+            "Project": "mts",
+            "Environment": "shd",
+            "Owner": "infrastructure",
+            "CostCenter": "mts-shared",
+            "ManagedBy": "terraform",
+            "Repository": "microservice-app-ops"
+          }
+        },
+        "after_unknown": {}
+      }
+    },
+    {
+      "address": "aws_sqs_queue.legacy",
+      "mode": "managed",
+      "type": "aws_sqs_queue",
+      "name": "legacy",
+      "change": {
+        "actions": ["delete"],
+        "before": {"name": "microtodosuite-legacy-events", "tags": {}},
+        "after": null,
+        "after_unknown": {}
+      }
+    }
+  ]
+}

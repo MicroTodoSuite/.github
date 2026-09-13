@@ -54,6 +54,15 @@ on:
         description: Self-hosted SonarQube URL
         default: ""
         type: string
+      sonar-required:
+        description: >-
+          Fail closed on the SonarQube quality gate (spec 009 T102). When true,
+          an eligible run whose sonar-project-key, sonar-host-url or SONAR_TOKEN
+          is missing fails instead of silently skipping the gate. A service sets
+          it true once its Sonar project is bootstrapped (T111); economical
+          callers keep the default and are unaffected.
+        default: false
+        type: boolean
     secrets:
       SONAR_TOKEN:
         required: false
@@ -157,6 +166,22 @@ jobs:
         if: ${{ inputs.contract-command != '' }}
         shell: bash
         run: ${{ inputs.contract-command }}
+
+      - name: Require the SonarQube quality gate when fail-closed
+        if: ${{ inputs.sonar-required }}
+        shell: bash
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "${{ inputs.sonar-project-key }}" ]] || missing+=("sonar-project-key")
+          [[ -n "${{ inputs.sonar-host-url }}" ]] || missing+=("sonar-host-url")
+          [[ -n "${SONAR_TOKEN:-}" ]] || missing+=("SONAR_TOKEN")
+          if [[ "${#missing[@]}" -ne 0 ]]; then
+            echo "::error::the SonarQube quality gate is required but not configured: ${missing[*]}"
+            exit 1
+          fi
 
       - name: SonarQube quality gate
         if: ${{ inputs.sonar-project-key != '' && inputs.sonar-host-url != '' }}

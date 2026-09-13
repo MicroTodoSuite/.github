@@ -1,0 +1,47 @@
+# Five-service quality-gate matrix (gitops spec 009 T099). The gates each
+# service must run through the reusable ci.yml before its digest may be
+# promoted. `required` gates fail closed; `n/a` means the gate does not apply to
+# that service (e.g. a backend has no browser E2E of its own — the frontend
+# owns the five-service stack E2E). This is the contract the per-service
+# workflows (T105-T109) and their tests (T101) are checked against.
+services:
+  auth-api:
+    unit: required
+    integration: required
+    contract: required        # OpenAPI
+    e2e: n/a                  # covered by the frontend five-service stack E2E
+    performance: n/a
+    dast: n/a
+    sonar: required
+  todos-api:
+    unit: required
+    integration: required
+    contract: required        # OpenAPI + AsyncAPI + Pact
+    e2e: n/a
+    performance: n/a
+    dast: n/a
+    sonar: required
+  users-api:
+    unit: required
+    integration: required
+    contract: required        # OpenAPI
+    e2e: n/a
+    performance: n/a
+    dast: n/a
+    sonar: required
+  frontend:
+    unit: required
+    integration: required
+    contract: required        # conformance + Pact
+    e2e: required             # owns the full five-service stack E2E
+    performance: required
+    dast: required
+    sonar: required
+  log-message-processor:
+    unit: required
+    integration: required
+    contract: required        # AsyncAPI
+    e2e: n/a
+    performance: n/a
+    dast: n/a
+    sonar: required

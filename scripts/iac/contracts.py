@@ -8,11 +8,13 @@ the rule it enforces, so a failure points at the rule text that explains it.
 Usage:
   contracts.py [--format text|json] module DIR [--config FILE]
   contracts.py [--format text|json] root DIR
-  contracts.py [--format text|json] repo DIR --kind modules|live [--config FILE]
+  contracts.py [--format text|json] repo DIR --kind modules|live [--config FILE] [--repo-root DIR] [--exceptions FILE]
   contracts.py [--format text|json] plan FILE --client CODE --project CODE [--domain NAME]
 
-`module` and `root` accept `--exceptions FILE` and `--repo-root DIR`; `repo`
-reads `docs/iac-exceptions.md` and `iac-contracts.json` from the repository.
+`module` and `root` accept `--exceptions FILE` and `--repo-root DIR`. `repo`
+scans DIR and reads `docs/iac-exceptions.md` and `iac-contracts.json` from the
+repository root, which is DIR unless `--repo-root` names it; findings carry
+paths relative to that root.
 
 Exit status: 0 without findings, 1 with findings, 2 on a usage or parse error.
 """
@@ -813,6 +815,10 @@ def main(argv: list[str]) -> int:
     repo.add_argument("directory", type=Path)
     repo.add_argument("--kind", choices=("modules", "live"), required=True)
     repo.add_argument("--config", type=Path)
+    # A gate that scans a subdirectory, such as aws/environments/eco, names the repository
+    # root so the repository's exceptions apply and findings carry repository paths.
+    repo.add_argument("--repo-root", type=Path)
+    repo.add_argument("--exceptions", type=Path)
     plan = commands.add_parser("plan")
     plan.add_argument("file", type=Path)
     plan.add_argument("--client", required=True)
@@ -822,10 +828,12 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "repo":
-            repo_root = args.directory.resolve()
+            scanned = args.directory.resolve()
+            repo_root = args.repo_root.resolve() if args.repo_root else scanned
             config_path = args.config or repo_root / "iac-contracts.json"
-            checker = Checker(repo_root, load_exceptions(repo_root / "docs" / "iac-exceptions.md"))
-            check_repo(checker, repo_root, args.kind, _load_config(config_path))
+            exceptions_path = args.exceptions or repo_root / "docs" / "iac-exceptions.md"
+            checker = Checker(repo_root, load_exceptions(exceptions_path))
+            check_repo(checker, scanned, args.kind, _load_config(config_path))
         elif args.command == "plan":
             checker = Checker(None, [])
             check_plan(checker, args.file, args.client, args.project, args.domain)

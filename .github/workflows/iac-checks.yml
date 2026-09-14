@@ -71,13 +71,16 @@ jobs:
           "$RUNNER_TEMP/iac-venv/bin/pip" install --quiet --require-hashes \
             -r "$RUNNER_TEMP/iac-checks/scripts/iac/requirements.txt"
 
+      # The scan covers working-directory; the exceptions and the reported paths belong
+      # to the repository root, so a live repository's docs/iac-exceptions.md applies
+      # when only aws/environments/<env> is scanned.
       - name: Run the rule contracts
         working-directory: ${{ inputs.working-directory }}
         env:
           KIND: ${{ inputs.kind }}
         run: |
           "$RUNNER_TEMP/iac-venv/bin/python" "$RUNNER_TEMP/iac-checks/scripts/iac/contracts.py" \
-            repo . --kind "$KIND"
+            repo . --kind "$KIND" --repo-root "$GITHUB_WORKSPACE"
 
   terraform:
     name: terraform fmt, validate, and test

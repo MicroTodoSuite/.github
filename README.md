@@ -95,7 +95,7 @@ requests. It enforces the rules in `microservice-app-ai-agents/rules/iac/`:
 
 | Job | What it runs |
 | --- | --- |
-| rule contracts | `scripts/iac/contracts.py repo . --kind modules\|live`, at the same commit as the workflow |
+| rule contracts | `scripts/iac/contracts.py repo . --kind modules\|live --repo-root "$GITHUB_WORKSPACE"`, at the same commit as the workflow: it scans `working-directory` and applies the repository root's `docs/iac-exceptions.md` |
 | terraform | `terraform fmt -check`, then `terraform test` in each module, `terraform validate` in each sample, and `validate` plus `test` in each live root, with the version from `.terraform-version` |
 | tflint | tflint with the AWS ruleset, from `.tflint.hcl` or `scripts/iac/tflint.hcl` |
 | trivy | `trivy config`, failing on HIGH and CRITICAL misconfigurations |

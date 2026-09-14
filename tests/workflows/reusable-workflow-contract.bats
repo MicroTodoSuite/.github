@@ -81,6 +81,60 @@ for f in "$ci" "$release" "$promote"; do
   fi
 done
 
+# --- the publication guard accepts the rebuilt names ------------------------
+# ops spec 004 renames the registry and the publisher role. The guard must take
+# the rebuilt names, and keep taking the legacy ones until that rebuild retires
+# them, so a caller can move without breaking every push to its main.
+guard_script() {
+  awk -v step="      - name: $1" '
+    $0 == step { in_step = 1; next }
+    in_step && /^      - name: / { exit }
+    in_step && /^        run: \|/ { in_run = 1; next }
+    in_run && /^          / { sub(/^          /, ""); print; next }
+    in_run && NF == 0 { print ""; next }
+    in_run { exit }
+  ' "$ci"
+}
+
+guard_accepts() {  # name, description, env assignments...
+  local script=$1 description=$2; shift 2
+  env "$@" bash -c "$script" >/dev/null 2>&1 \
+    || fail "the publication guard must accept $description"
+}
+
+guard_rejects() {
+  local script=$1 description=$2; shift 2
+  if env "$@" bash -c "$script" >/dev/null 2>&1; then
+    fail "the publication guard must reject $description"
+  fi
+}
+
+inputs_guard="$(guard_script 'Validate immutable publication inputs')"
+[[ -n "$inputs_guard" ]] || fail "could not read the publication input guard from ci.yml"
+account=000000000000
+registry="${account}.dkr.ecr.us-east-1.amazonaws.com"
+guard_accepts "$inputs_guard" "the rebuilt repository of a service" \
+  SERVICE_NAME=auth-api "ECR_REPOSITORY=${registry}/lex-mts-shd-ecr-authapi" \
+  AWS_REGION_INPUT=us-east-1 "AWS_ACCOUNT_ID=${account}"
+guard_accepts "$inputs_guard" "the legacy repository until the rebuild retires it" \
+  SERVICE_NAME=auth-api "ECR_REPOSITORY=${registry}/microtodosuite/auth-api" \
+  AWS_REGION_INPUT=us-east-1 "AWS_ACCOUNT_ID=${account}"
+guard_rejects "$inputs_guard" "another service's repository" \
+  SERVICE_NAME=auth-api "ECR_REPOSITORY=${registry}/lex-mts-shd-ecr-frontend" \
+  AWS_REGION_INPUT=us-east-1 "AWS_ACCOUNT_ID=${account}"
+guard_rejects "$inputs_guard" "a repository outside the account registry" \
+  SERVICE_NAME=auth-api ECR_REPOSITORY=docker.io/someone/auth-api \
+  AWS_REGION_INPUT=us-east-1 "AWS_ACCOUNT_ID=${account}"
+
+boundary_guard="$(guard_script 'Validate reviewed-main publication boundary')"
+[[ -n "$boundary_guard" ]] || fail "could not read the publication boundary guard from ci.yml"
+guard_accepts "$boundary_guard" "the rebuilt publisher role" \
+  "PUBLISHER_ROLE_ARN=arn:aws:iam::${account}:role/lex-mts-shd-role-ecrpublish" "AWS_ACCOUNT_ID=${account}"
+guard_accepts "$boundary_guard" "the legacy publisher role until the rebuild retires it" \
+  "PUBLISHER_ROLE_ARN=arn:aws:iam::${account}:role/microtodosuite-github-ecr-publisher" "AWS_ACCOUNT_ID=${account}"
+guard_rejects "$boundary_guard" "any other role" \
+  "PUBLISHER_ROLE_ARN=arn:aws:iam::${account}:role/someone-elses-role" "AWS_ACCOUNT_ID=${account}"
+
 # --- five-service quality-gate matrix is complete --------------------------
 for svc in auth-api todos-api users-api frontend log-message-processor; do
   grep -Eq "^\s{2}${svc}:" "$matrix" || fail "matrix is missing service: $svc"

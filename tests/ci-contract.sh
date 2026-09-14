@@ -36,7 +36,9 @@ require_literal "github.repository_owner == 'MicroTodoSuite'"
 require_literal "microtodosuite-github-ecr-publisher"
 require_literal 'vars.AWS_ACCOUNT_ID'
 require_literal ".dkr.ecr."
-require_literal "amazonaws.com/microtodosuite/"
+require_literal "/microtodosuite/${SERVICE_NAME}"
+require_literal "lex-mts-shd-ecr-"
+require_literal "lex-mts-shd-role-ecrpublish"
 
 # The account is an organization variable, not a literal: a literal here is one
 # more file to find and edit the next time the account changes.

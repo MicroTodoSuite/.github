@@ -324,6 +324,34 @@ expect_clean "a recorded exception with an expiry waives the finding" repo "$l" 
 sed -i 's/| When the network outputs move to tags |/|  |/' "$l/docs/iac-exceptions.md"
 expect_rule "an exception without an expiry does not waive" PC-IAC-017 repo "$l" --kind live
 
+echo "== exceptions of the repository when the gate scans a subdirectory"
+# A live repository's gate scans aws/environments/<env>; its exceptions and its
+# paths belong to the repository root.
+l="$(fresh_live)"; cat >>"$l/$root_rel/data.tf" <<'HCL'
+
+data "terraform_remote_state" "network" {
+  backend = "s3"
+  config  = {}
+}
+HCL
+cat >"$l/docs/iac-exceptions.md" <<'MD'
+# Infrastructure-as-Code Exceptions
+
+| Rule | Path | Resource | Reason | Expiry |
+| --- | --- | --- | --- | --- |
+| PC-IAC-017 | aws/environments/fdev/workload | data.terraform_remote_state.network | Test fixture | When the network outputs move to tags |
+MD
+expect_rule "a subdirectory scan alone does not see the repository's exceptions" PC-IAC-017 repo "$l/aws/environments/fdev" --kind live
+expect_clean "a subdirectory scan with --repo-root waives by repository path" repo "$l/aws/environments/fdev" --kind live --repo-root "$l"
+expect_clean "an explicit --exceptions file waives the same finding" repo "$l/aws/environments/fdev" --kind live --repo-root "$l" --exceptions "$l/docs/iac-exceptions.md"
+output="$(run_contracts --format json repo "$l/aws/environments/fdev" --kind live --repo-root "$l" --exceptions "$work/absent.md" 2>&1 || true)"
+if "$python" -c 'import json, sys; d = json.loads(sys.argv[1]); assert [f["path"] for f in d["findings"] if f["rule"] == "PC-IAC-017"] == ["aws/environments/fdev/workload"]' "$output"; then
+  report_pass "findings of a subdirectory scan name repository-relative paths"
+else
+  report_fail "findings of a subdirectory scan name repository-relative paths"
+  printf '%s\n' "$output" | sed 's/^/     /'
+fi
+
 echo "== PC-IAC-022 domain separation"
 l="$(fresh_live)"; printf '\nresource "aws_vpc" "extra" {\n  provider   = aws.principal\n  cidr_block = local.vpc_cidr\n}\n' >>"$l/$root_rel/main.tf"
 expect_rule "a networking resource in a workload root fails" PC-IAC-022 repo "$l" --kind live

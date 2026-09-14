@@ -102,13 +102,22 @@ jobs:
             echo "::error::organization variable AWS_ACCOUNT_ID must be the 12-digit AWS account"
             exit 1
           }
+          # ops spec 004 renames the registry: microtodosuite/<service> becomes
+          # lex-mts-shd-ecr-<key>. Both are accepted while the rebuild runs; the
+          # legacy path goes when ops spec 004 T026 deletes the old repositories.
           case "$SERVICE_NAME" in
-            auth-api|todos-api|users-api|frontend|log-message-processor) ;;
+            auth-api) image_key=authapi ;;
+            frontend) image_key=frontend ;;
+            log-message-processor) image_key=logmsgproc ;;
+            todos-api) image_key=todosapi ;;
+            users-api) image_key=usersapi ;;
             *) echo "::error::unsupported service-name: $SERVICE_NAME"; exit 1 ;;
           esac
-          expected="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION_INPUT}.amazonaws.com/microtodosuite/${SERVICE_NAME}"
-          [[ "$ECR_REPOSITORY" == "$expected" ]] || {
-            echo "::error::ecr-repository must be the exact neutral repository $expected"
+          registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION_INPUT}.amazonaws.com"
+          rebuilt="${registry}/lex-mts-shd-ecr-${image_key}"
+          legacy="${registry}/microtodosuite/${SERVICE_NAME}"
+          [[ "$ECR_REPOSITORY" == "$rebuilt" || "$ECR_REPOSITORY" == "$legacy" ]] || {
+            echo "::error::ecr-repository must be $rebuilt, or $legacy until ops spec 004 retires it"
             exit 1
           }
 
@@ -240,8 +249,12 @@ jobs:
             echo "::error::organization variable AWS_ACCOUNT_ID must be the 12-digit AWS account"
             exit 1
           }
-          [[ "$PUBLISHER_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/microtodosuite-github-ecr-publisher" ]] || {
-            echo "::error::publisher-role-arn is not the Terraform-owned publisher role"
+          # The publisher role is renamed by the same rebuild; both are accepted
+          # until ops spec 004 retires the legacy one.
+          rebuilt_role="arn:aws:iam::${AWS_ACCOUNT_ID}:role/lex-mts-shd-role-ecrpublish"
+          legacy_role="arn:aws:iam::${AWS_ACCOUNT_ID}:role/microtodosuite-github-ecr-publisher"
+          [[ "$PUBLISHER_ROLE_ARN" == "$rebuilt_role" || "$PUBLISHER_ROLE_ARN" == "$legacy_role" ]] || {
+            echo "::error::publisher-role-arn is not a Terraform-owned publisher role"
             exit 1
           }
 

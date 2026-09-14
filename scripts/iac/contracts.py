@@ -89,6 +89,28 @@ FORBIDDEN_IN_MODULES = (
 GOVERNANCE_REFERENCE = re.compile(r"var\.(client|project|environment)\b")
 ACCOUNT_LITERAL = re.compile(r"(?<![0-9A-Za-z])[0-9]{12}(?![0-9A-Za-z])")
 REGION_LITERAL = re.compile(r'"(us|eu|ap|sa|ca|me|af|il|mx)-(gov-)?[a-z]+-[0-9]"')
+ZONE_LITERAL = re.compile(r'"(us|eu|ap|sa|ca|me|af|il|mx)-(gov-)?[a-z]+-[0-9][a-z]"')
+# PC-IAC-024: environment configuration a root reads from its .tfvars. 0.0.0.0/0 is the one
+# address block that is not environment configuration.
+CIDR_LITERAL = re.compile(r'"(?!0\.0\.0\.0/0")[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}"')
+INSTANCE_TYPE_LITERAL = re.compile(
+    r'"([a-z]+\.)?[a-z][a-z0-9-]*\.(nano|micro|small|medium|large|[0-9]*xlarge|metal)"')
+GITHUB_SUBJECT_LITERAL = re.compile(r"repo:[A-Za-z0-9][A-Za-z0-9-]*/")
+# A domain is recognized by the attribute that holds it: a dotted value such as
+# terraform.tfstate is not one.
+DOMAIN_ATTRIBUTE = re.compile(r"(^|_)(domain|domains|domain_name|domain_names|zone_name|hostname|fqdn)$")
+DOMAIN_VALUE = re.compile(r"^(\*\.)?([a-z0-9-]+\.)+[a-z]{2,}\.?$")
+# Literals a root never types, each with its rule and the source of the value instead.
+ROOT_LITERALS = (
+    (ACCOUNT_LITERAL, "MTS-IAC-103", "an account ID arrives as var.aws_account_id, never as a literal"),
+    (REGION_LITERAL, "MTS-IAC-103", "the region arrives from the environment's .tfvars, never as a literal"),
+    (ZONE_LITERAL, "MTS-IAC-103", "an Availability Zone arrives from the environment's .tfvars, never as a literal"),
+    (CIDR_LITERAL, "PC-IAC-024", "a CIDR block arrives from the environment's .tfvars, never as a literal"),
+    (INSTANCE_TYPE_LITERAL, "PC-IAC-024",
+     "an instance type arrives from the environment's .tfvars, never as a literal"),
+    (GITHUB_SUBJECT_LITERAL, "PC-IAC-024",
+     "the GitHub organization of an OIDC subject arrives as a variable, never as a literal"),
+)
 MODULE_TAG = re.compile(r"^(?P<module>[a-z0-9]+(?:-[a-z0-9]+)*)-v\d+\.\d+\.\d+$")
 REGISTRY_SOURCE = re.compile(r"^[a-z0-9-]+/[a-z0-9-]+/[a-z0-9]+(//.*)?$")
 EXACT_VERSION = re.compile(r"^=?\s*\d+\.\d+\.\d+$")
@@ -598,12 +620,14 @@ def check_root(checker: Checker, directory: Path) -> None:
                             f"a {domain} root does not create {owners[0]} resources")
 
     for filename, text in tf.text.items():
-        for match in ACCOUNT_LITERAL.finditer(text):
-            checker.add("MTS-IAC-103", directory, f"{filename}:{_line(text, match.start())}",
-                        "an account ID arrives as var.aws_account_id, never as a literal")
-        for match in REGION_LITERAL.finditer(text):
-            checker.add("MTS-IAC-103", directory, f"{filename}:{_line(text, match.start())}",
-                        "the region arrives from the environment's .tfvars, never as a literal")
+        for pattern, rule, message in ROOT_LITERALS:
+            for match in pattern.finditer(text):
+                checker.add(rule, directory, f"{filename}:{_line(text, match.start())}", message)
+    for filename, doc in tf.files.items():
+        for attribute, value in _string_values(doc):
+            if DOMAIN_ATTRIBUTE.search(attribute) and DOMAIN_VALUE.match(value):
+                checker.add("PC-IAC-024", directory, f"{filename}:{attribute}",
+                            "a domain arrives from the environment's .tfvars, never as a literal")
 
 
 def check_root_providers(checker: Checker, tf: Terraform, directory: Path) -> None:
@@ -662,6 +686,20 @@ def check_module_source(checker: Checker, directory: Path, name: str, body: dict
 
 def _line(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
+
+
+def _string_values(node, attribute: str = ""):
+    """Yield (attribute, value) for every literal string of a parsed file, at any depth. A
+    list item carries the attribute of its list."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if not key.startswith("__"):
+                yield from _string_values(value, unquote(key))
+    elif isinstance(node, list):
+        for item in node:
+            yield from _string_values(item, attribute)
+    elif is_literal_string(node):
+        yield attribute, unquote(node)
 
 
 # ---------------------------------------------------------------------------

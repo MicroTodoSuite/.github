@@ -400,6 +400,26 @@ l="$(fresh_live)"; sed -i 's/allowed_account_ids = \[var.aws_account_id\]/allowe
 expect_rule "a literal account in a root fails" MTS-IAC-103 repo "$l" --kind live
 l="$(fresh_live)"; sed -i '/allowed_account_ids/d' "$l/$root_rel/providers.tf"
 expect_rule "a root provider without allowed_account_ids fails" MTS-IAC-103 repo "$l" --kind live
+l="$(fresh_live)"; sed -i 's|^locals {$|locals {\n  zone = "us-east-1a"|' "$l/$root_rel/locals.tf"
+expect_rule "a literal Availability Zone in a root fails" MTS-IAC-103 repo "$l" --kind live
+
+echo "== PC-IAC-024 environment configuration from .tfvars"
+l="$(fresh_live)"; sed -i 's|^locals {$|locals {\n  vpc_cidr = "10.20.0.0/16"|' "$l/$root_rel/locals.tf"
+expect_rule "a literal CIDR block in a root fails" PC-IAC-024 repo "$l" --kind live
+l="$(fresh_live)"; sed -i 's|^locals {$|locals {\n  anywhere = "0.0.0.0/0"|' "$l/$root_rel/locals.tf"
+expect_clean "the any-address block 0.0.0.0/0 passes" repo "$l" --kind live
+l="$(fresh_live)"; sed -i 's|^locals {$|locals {\n  instance_types = ["m7i-flex.large"]|' "$l/$root_rel/locals.tf"
+expect_rule "a literal instance type in a root fails" PC-IAC-024 repo "$l" --kind live
+l="$(fresh_live)"; sed -i 's|^locals {$|locals {\n  subject = "repo:MicroTodoSuite/microservice-app-ops:ref:refs/heads/main"|' "$l/$root_rel/locals.tf"
+expect_rule "a literal GitHub organization in an OIDC subject fails" PC-IAC-024 repo "$l" --kind live
+l="$(fresh_live)"
+# shellcheck disable=SC2016 # the HCL interpolation is written literally on purpose
+sed -i 's|^locals {$|locals {\n  subject = "repo:${var.project}/microservice-app-ops:ref:refs/heads/main"|' "$l/$root_rel/locals.tf"
+expect_clean "an OIDC subject whose organization is a variable passes" repo "$l" --kind live
+l="$(fresh_live)"; sed -i 's|^locals {$|locals {\n  api = { domain_name = "api.lexfield.example.com" }|' "$l/$root_rel/locals.tf"
+expect_rule "a literal domain in a root fails" PC-IAC-024 repo "$l" --kind live
+l="$(fresh_live)"; sed -i 's|^locals {$|locals {\n  state_key = "fdev/workload/terraform.tfstate"|' "$l/$root_rel/locals.tf"
+expect_clean "a dotted value that is not a domain passes" repo "$l" --kind live
 
 echo "== output format"
 output="$(run_contracts --format json module "$(fresh_module)" 2>&1 || true)"

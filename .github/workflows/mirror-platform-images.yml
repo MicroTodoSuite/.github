@@ -1,0 +1,211 @@
+name: mirror platform images
+
+# Mirrors every checksum-locked third-party platform image into the
+# organization's own ECR repository, `microtodosuite/platform` (gitops spec 009
+# T082). It copies the complete OCI graph by immutable upstream digest without
+# rebuilding, verifies the mirrored digest equals the upstream one, scans it,
+# records both digests as evidence, and keyless-signs it with Cosign.
+#
+# Identity boundary (T082, T061/T062): this runs under a DEDICATED mirror role
+# assumed through GitHub OIDC — never the service image-publisher role — and it
+# never checks out or is granted access to any of the five service
+# repositories. The account is read from the organization variable
+# `AWS_ACCOUNT_ID`, so it moves with `scripts/set-aws-account.sh` and no retired
+# account is ever hard-coded here.
+#
+# The locked image set is the single source of truth in
+# `microservice-app-gitops/scripts/managed/full-profile-toolchain.lock`
+# (`.images[]`). This workflow reads it from a short-lived GitHub App
+# installation token scoped read-only to that one repository — the same
+# app-token pattern release.yml uses — so it needs no personal token and grants
+# no standing access.
+#
+# It cannot run until Terraform (ops, spec 009 Phase 4 T061) has created the
+# `microtodosuite/platform` ECR repository and the mirror role whose trust
+# policy names exactly this workflow's OIDC subject. Until then this is authored
+# and contract-tested but inactive.
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws-region:
+        description: Region of the platform ECR repository
+        type: string
+        default: us-east-1
+      mirror-role-arn:
+        description: >-
+          The Terraform-owned dedicated mirror role ARN (NOT the service
+          publisher role). Defaults to the conventional name in the declared
+          account when left empty.
+        type: string
+        default: ""
+      gitops-ref:
+        description: The reviewed microservice-app-gitops ref to read the lock from
+        type: string
+        default: main
+  workflow_call:
+    inputs:
+      aws-region:
+        type: string
+        default: us-east-1
+      mirror-role-arn:
+        type: string
+        default: ""
+      gitops-ref:
+        type: string
+        default: main
+    secrets:
+      gitops-reader-app-id:
+        description: GitHub App id with read-only contents on microservice-app-gitops
+        required: true
+      gitops-reader-app-key:
+        description: GitHub App private key (PEM)
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # OIDC to the dedicated mirror role — no static credentials
+    env:
+      LOCK_PATH: gitops/scripts/managed/full-profile-toolchain.lock
+      PLATFORM_REPO_PATH: microtodosuite/platform
+    steps:
+      - name: Mint a read-only gitops token
+        id: gitopstoken
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.gitops-reader-app-id }}
+          private-key: ${{ secrets.gitops-reader-app-key }}
+          owner: ${{ github.repository_owner }}
+          repositories: microservice-app-gitops
+
+      - name: Check out the toolchain lock (read-only, gitops only)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ github.repository_owner }}/microservice-app-gitops
+          ref: ${{ inputs.gitops-ref }}
+          token: ${{ steps.gitopstoken.outputs.token }}
+          persist-credentials: false
+          path: gitops
+
+      - name: Resolve the platform ECR repository from the declared account
+        id: registry
+        shell: bash
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          AWS_REGION_INPUT: ${{ inputs.aws-region }}
+        run: |
+          set -euo pipefail
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || {
+            echo "::error::vars.AWS_ACCOUNT_ID is not a 12-digit account id"; exit 1
+          }
+          registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION_INPUT}.amazonaws.com"
+          echo "registry=${registry}" >> "$GITHUB_OUTPUT"
+          echo "repository=${registry}/${PLATFORM_REPO_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: Install checksum-locked crane, cosign and trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bindir="$RUNNER_TEMP/bin"; mkdir -p "$bindir"
+
+          # crane — copies the complete OCI graph by digest without rebuilding.
+          craneurl="https://github.com/google/go-containerregistry/releases/download/v0.21.9/go-containerregistry_Linux_x86_64.tar.gz"
+          cranesum="5c16d8ddb971cb1d5e6ed8b1e743da8224414eeba2c2762d8f1a61b2f095699e"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location "$craneurl" -o crane.tgz
+          printf '%s  %s\n' "$cranesum" crane.tgz | sha256sum --check --strict -
+          tar -xzf crane.tgz -C "$bindir" crane
+
+          # cosign — keyless signature of the mirrored graph.
+          cosignurl="https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64"
+          cosignsum="4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location "$cosignurl" -o "$bindir/cosign"
+          printf '%s  %s\n' "$cosignsum" "$bindir/cosign" | sha256sum --check --strict -
+          chmod +x "$bindir/cosign"
+
+          # trivy — scans each mirrored image.
+          trivyurl="https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz"
+          trivysum="2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location "$trivyurl" -o trivy.tgz
+          printf '%s  %s\n' "$trivysum" trivy.tgz | sha256sum --check --strict -
+          tar -xzf trivy.tgz -C "$bindir" trivy
+
+          echo "$bindir" >> "$GITHUB_PATH"
+          crane version || true
+          cosign version
+          trivy --version
+
+      - name: Configure AWS credentials through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: >-
+            ${{ inputs.mirror-role-arn != ''
+              && inputs.mirror-role-arn
+              || format('arn:aws:iam::{0}:role/microtodosuite-platform-mirror', vars.AWS_ACCOUNT_ID) }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
+
+      - name: Mirror, verify, scan, sign and record every locked image
+        shell: bash
+        env:
+          PLATFORM_REPOSITORY: ${{ steps.registry.outputs.repository }}
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/mirror-digests.json"
+          echo '{"repository":"'"$PLATFORM_REPOSITORY"'","images":[]}' > "$evidence"
+
+          count="$(jq '.images | length' "$LOCK_PATH")"
+          echo "mirroring ${count} locked images into ${PLATFORM_REPOSITORY}"
+
+          for i in $(seq 0 $((count - 1))); do
+            id="$(jq -r ".images[$i].id" "$LOCK_PATH")"
+            upstreamRef="$(jq -r ".images[$i].upstreamRef" "$LOCK_PATH")"
+            upstreamDigest="$(jq -r ".images[$i].upstreamDigest" "$LOCK_PATH")"
+            mirrorTag="$(jq -r ".images[$i].mirrorTag" "$LOCK_PATH")"
+
+            src="${upstreamRef%:*}@${upstreamDigest}"
+            dst="${PLATFORM_REPOSITORY}:${mirrorTag}"
+            echo "::group::${id}  ${src} -> ${dst}"
+
+            # Copy the complete OCI graph without rebuilding.
+            crane copy "$src" "$dst"
+
+            # The mirrored manifest digest MUST equal the upstream one.
+            mirroredDigest="$(crane digest "$dst")"
+            if [[ "$mirroredDigest" != "$upstreamDigest" ]]; then
+              echo "::error::${id}: mirrored digest ${mirroredDigest} != upstream ${upstreamDigest}"
+              exit 1
+            fi
+
+            # Scan the mirrored image by its immutable digest.
+            trivy image --quiet --exit-code 0 --severity HIGH,CRITICAL \
+              "${PLATFORM_REPOSITORY}@${mirroredDigest}"
+
+            # Keyless-sign the mirrored digest.
+            cosign sign "${PLATFORM_REPOSITORY}@${mirroredDigest}"
+
+            # Record source and mirror digests.
+            jq --arg id "$id" --arg src "$src" \
+               --arg sourceDigest "$upstreamDigest" \
+               --arg mirror "$dst" --arg mirrorDigest "$mirroredDigest" \
+               '.images += [{"id":$id,"source":$src,"sourceDigest":$sourceDigest,"mirror":$mirror,"mirrorDigest":$mirrorDigest}]' \
+               "$evidence" > "$evidence.tmp" && mv "$evidence.tmp" "$evidence"
+            echo "::endgroup::"
+          done
+
+          echo "recorded $(jq '.images | length' "$evidence") source/mirror digest pairs"
+
+      - name: Upload the source/mirror digest evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: platform-image-mirror-digests
+          path: ${{ runner.temp }}/mirror-digests.json
+          if-no-files-found: error

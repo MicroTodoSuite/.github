@@ -28,6 +28,15 @@ on:
           can only ever land on a registered destination.
         default: eks-dev
         type: string
+      strategy:
+        description: >-
+          Rollout strategy the destination overlay uses. `rolling` for
+          economical dev/staging and full dev/staging; `canary` only for full
+          AWS production (spec 009 T104/T110). Validated against the
+          profile/destination below so a canary can never target a rolling
+          destination.
+        default: rolling
+        type: string
       image-digest:
         description: sha256:<64hex> produced by ci.yml
         required: true
@@ -47,11 +56,15 @@ on:
         default: us-east-1
         type: string
     secrets:
-      gitops-app-id:
-        description: GitHub App ID of the gitops promoter App
+      gitops-promote-app-id:
+        description: >-
+          GitHub App id of the gitops promoter App. Callers wire the
+          organization secret GITOPS_PROMOTE_APP_ID here (spec 009 T099).
         required: true
-      gitops-app-key:
-        description: GitHub App private key (PEM) of the gitops promoter App
+      gitops-promote-app-key:
+        description: >-
+          GitHub App private key (PEM) of the gitops promoter App. Callers wire
+          the organization secret GITOPS_PROMOTE_APP_KEY here (spec 009 T099).
         required: true
 
 permissions:
@@ -62,27 +75,45 @@ jobs:
   open-promotion-pr:
     runs-on: ubuntu-latest
     steps:
-      - name: Validate digest format
+      - name: Validate digest, profile, destination and strategy
         shell: bash
+        env:
+          PROFILE: ${{ inputs.profile }}
+          DESTINATION: ${{ inputs.destination }}
+          STRATEGY: ${{ inputs.strategy }}
         run: |
           set -euo pipefail
           [[ "${{ inputs.image-digest }}" =~ ^sha256:[a-f0-9]{64}$ ]] \
             || { echo "::error::image-digest is not sha256:<64 hex>"; exit 1; }
 
+          # Profile, destination and strategy are an allowlisted tuple, not free
+          # text: a digest can only ever land on a registered destination, and a
+          # canary can only ever target full AWS production (T104/T110).
+          case "$PROFILE" in economical|full) ;; *) echo "::error::unknown profile: $PROFILE"; exit 1 ;; esac
+          case "$STRATEGY" in rolling|canary) ;; *) echo "::error::unknown strategy: $STRATEGY"; exit 1 ;; esac
+          case "$PROFILE/$DESTINATION" in
+            economical/eks-dev) ;;
+            full/eks-full-dev|full/eks-full-staging|full/eks-full-prod) ;;
+            *) echo "::error::unregistered profile/destination tuple: $PROFILE/$DESTINATION"; exit 1 ;;
+          esac
+          if [[ "$STRATEGY" == "canary" && "$PROFILE/$DESTINATION" != "full/eks-full-prod" ]]; then
+            echo "::error::canary is only valid for full/eks-full-prod, not $PROFILE/$DESTINATION"; exit 1
+          fi
+
       # Cosign reads the signature artifact from the private ECR registry, so the
       # job must authenticate to ECR (OIDC) before verifying.
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
         with:
           role-to-assume: ${{ inputs.publisher-role-arn }}
           aws-region: ${{ inputs.aws-region }}
       - name: Log in to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
 
       # FR-011: never promote an artifact CI did not build+sign. Verify the
       # keyless Cosign signature for this exact digest before opening the PR.
       - name: Verify image signature (provenance)
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
       - name: Cosign verify
         shell: bash
         run: |
@@ -95,15 +126,15 @@ jobs:
 
       - name: Generate gitops token (GitHub App)
         id: apptoken
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
         with:
-          app-id: ${{ secrets.gitops-app-id }}
-          private-key: ${{ secrets.gitops-app-key }}
+          app-id: ${{ secrets.gitops-promote-app-id }}
+          private-key: ${{ secrets.gitops-promote-app-key }}
           owner: MicroTodoSuite
           repositories: microservice-app-gitops
 
       - name: Checkout GitOps repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: ${{ inputs.gitops-repo }}
           token: ${{ steps.apptoken.outputs.token }}

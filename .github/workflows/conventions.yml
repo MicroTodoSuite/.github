@@ -39,3 +39,6 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           INFRASTRUCTURE: ${{ inputs.infrastructure || false }}
         run: python3 conventions-source/scripts/conventions/validate-pr.py
+
+      - name: Validate GitHub Actions runtime pins
+        run: conventions-source/tests/github-actions-runtime.sh

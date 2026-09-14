@@ -36,7 +36,7 @@ require_literal "github.repository_owner == 'MicroTodoSuite'"
 require_literal "microtodosuite-github-ecr-publisher"
 require_literal 'vars.AWS_ACCOUNT_ID'
 require_literal ".dkr.ecr."
-require_literal "/microtodosuite/${SERVICE_NAME}"
+require_literal '/microtodosuite/${SERVICE_NAME}'
 require_literal "lex-mts-shd-ecr-"
 require_literal "lex-mts-shd-role-ecrpublish"
 

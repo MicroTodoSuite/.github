@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the pinned convention validator
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -39,3 +39,6 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           INFRASTRUCTURE: ${{ inputs.infrastructure || false }}
         run: python3 conventions-source/scripts/conventions/validate-pr.py
+
+      - name: Validate GitHub Actions runtime pins
+        run: conventions-source/tests/github-actions-runtime.sh

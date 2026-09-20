@@ -1,0 +1,13 @@
+name: _probe-empty-test-command
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  probe:
+    uses: ./.github/workflows/ci.yml
+    with:
+      service-name: auth-api
+      language: go
+      test-command: ""
+      ecr-repository: 575172595729.dkr.ecr.us-east-1.amazonaws.com/lex-mts-shd-ecr-authapi
+      publisher-role-arn: arn:aws:iam::575172595729:role/microtodosuite-github-ecr-publisher

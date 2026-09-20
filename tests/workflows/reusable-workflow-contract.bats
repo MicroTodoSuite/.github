@@ -24,6 +24,8 @@ done
 # --- ci.yml: coverage gates, Sonar fail-closed, digest output, OIDC ---------
 have "$ci" "workflow_call" "ci.yml must be a reusable workflow"
 have "$ci" "test-command:" "ci.yml must take a required test-command gate"
+have "$ci" "test-command must not be empty or blank" \
+  "ci.yml must fail visibly on an empty test-command, never pass having tested nothing (FR-017, gitops spec 003 T024)"
 have "$ci" "contract-command:" "ci.yml must take a contract-command gate"
 have "$ci" "sonar-required:" "ci.yml must expose the Sonar fail-closed toggle (T102)"
 have "$ci" "the SonarQube quality gate is required but not configured" \

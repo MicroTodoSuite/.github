@@ -160,6 +160,17 @@ jobs:
         shell: bash
         run: ${{ inputs.source-audit-command }}
 
+      - name: Reject an empty test-command
+        shell: bash
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TEST_COMMAND// /}" ]]; then
+            echo "::error::test-command must not be empty or blank -- an empty run: step succeeds having tested nothing (FR-017: a gate must fail visibly, never pass silently)"
+            exit 1
+          fi
+
       - name: Run repository tests
         shell: bash
         run: ${{ inputs.test-command }}

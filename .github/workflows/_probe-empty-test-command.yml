@@ -1,6 +1,7 @@
 name: _probe-empty-test-command
 on:
-  workflow_dispatch:
+  pull_request:
+    branches: [main]
 jobs:
   probe:
     uses: ./.github/workflows/ci.yml

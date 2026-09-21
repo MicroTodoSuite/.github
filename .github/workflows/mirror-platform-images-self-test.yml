@@ -4,7 +4,8 @@ name: platform image mirror self-test
 # its test, the same self-test pattern as iac-checks-self-test.yml. The mirror
 # workflow itself needs a live AWS mirror role and the platform ECR repository
 # (spec 009 Phase 4), so it cannot run in CI; this proves its contract holds at
-# the same commit.
+# the same commit. The contract now also runs the ECR-to-ACR copy step
+# (spec 009 T131) against mock registries, so it stays fully offline.
 
 on:
   pull_request:
@@ -17,6 +18,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/mirror-platform-images.yml"
+      - ".github/workflows/mirror-platform-images-self-test.yml"
       - "tests/workflows/mirror-platform-images.bats"
 
 permissions:

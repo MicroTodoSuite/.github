@@ -35,9 +35,12 @@ forbid_regex() {
 # --- reusable, and schedulable by its callers -------------------------------
 # The schedule lives in each caller, not here: GitHub never fires `schedule` for
 # a reusable workflow, so a cron in this file would silently never run.
+# Matched as a YAML key on its own line, not as text: the header explains the
+# rule in prose, and forbidding the bare word would report that explanation.
 require_literal "workflow_call"
 require_literal "workflow_dispatch"
-forbid_literal "schedule:"
+grep -Eq '^[[:space:]]*schedule:' "$workflow" \
+  && fail "the reusable workflow must not declare a schedule; its callers do" || true
 
 # --- the three surfaces T146 names ------------------------------------------
 # Source: the caller's own checkout, every run, needing no credential.
@@ -53,7 +56,13 @@ require_literal "image-reader-role-arn"
 require_literal "actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547"
 require_literal "microservice-app-gitops"
 require_literal "profiles"
-require_literal "scan-type: image"
+# Scanned by the checksum-locked Trivy release the toolchain lock records, not
+# by the action: the set of declared digests is resolved at run time and an
+# action cannot iterate it.
+require_literal "trivy image"
+require_literal "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+require_literal "sha256sum"
+require_literal "--check"
 
 # Cluster: the lane's existing read-only collector, never a new imperative path.
 require_literal "verify-security.sh"
@@ -84,10 +93,13 @@ require_literal "id-token: write"
 require_literal "aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708"
 forbid_regex "aws_access_key_id|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID"
 
-# --- the account is the declared one, never a hard-coded literal ------------
-require_literal "vars.AWS_ACCOUNT_ID"
+# --- the registry is an input, so no account lives in this file -------------
+# ci.yml already takes `ecr-repository` from its caller; the same shape here
+# means this workflow holds no account at all, and no retired one can rot in it.
+require_literal "image-repository"
 forbid_literal "916491575487"
 forbid_literal "995253610162"
+forbid_regex "[0-9]{12}\.dkr\.ecr\."
 
 # --- read-only: this workflow assesses, it never changes a cluster ----------
 if grep -Eq 'kubectl[[:space:]]+(apply|patch|delete|scale|replace|create|edit|annotate|label)' "$workflow"; then

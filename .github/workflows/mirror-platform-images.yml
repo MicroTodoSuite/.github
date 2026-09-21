@@ -24,6 +24,17 @@ name: mirror platform images
 # `microtodosuite/platform` ECR repository and the mirror role whose trust
 # policy names exactly this workflow's OIDC subject. Until then this is authored
 # and contract-tested but inactive.
+#
+# ECR -> ACR (spec 009 T131, research Decision 13): when `acr-name` is given,
+# the `mirror-to-acr` job then copies the complete, already-signed locked
+# platform graph from `microtodosuite/platform` in ECR to the same path in ACR.
+# It authenticates to AWS and Azure through OIDC only, copies each image by
+# digest with its referrers and tag-scheme signature/attestation/SBOM, and never
+# rebuilds or re-signs: the ECR signature bound to this workflow is the one
+# Kyverno admits, so ACR must carry exactly that one. A missing image, a mutable
+# lock reference, or any image/signature/attestation digest mismatch fails the
+# job and so blocks AKS activation. Without `acr-name` it is skipped and the
+# EKS-only mirror behaves exactly as before.
 
 on:
   workflow_dispatch:
@@ -43,6 +54,24 @@ on:
         description: The reviewed microservice-app-gitops ref to read the lock from
         type: string
         default: main
+      acr-name:
+        description: >-
+          Terraform-owned DR ACR name. When set, the signed platform graph is
+          also copied from ECR to this ACR; empty keeps the mirror EKS-only.
+        type: string
+        default: ""
+      azure-client-id:
+        description: Client id of the GitHub-federated ACR push identity (OIDC, no secret)
+        type: string
+        default: ""
+      azure-tenant-id:
+        description: Entra tenant of the ACR push identity
+        type: string
+        default: ""
+      azure-subscription-id:
+        description: Subscription that holds the ACR
+        type: string
+        default: ""
   workflow_call:
     inputs:
       aws-region:
@@ -54,6 +83,18 @@ on:
       gitops-ref:
         type: string
         default: main
+      acr-name:
+        type: string
+        default: ""
+      azure-client-id:
+        type: string
+        default: ""
+      azure-tenant-id:
+        type: string
+        default: ""
+      azure-subscription-id:
+        type: string
+        default: ""
     secrets:
       gitops-reader-app-id:
         description: GitHub App id with read-only contents on microservice-app-gitops
@@ -208,4 +249,219 @@ jobs:
         with:
           name: platform-image-mirror-digests
           path: ${{ runner.temp }}/mirror-digests.json
+          if-no-files-found: error
+
+  mirror-to-acr:
+    # Only after the ECR mirror succeeded, and only when an ACR is named.
+    needs: mirror
+    if: inputs.acr-name != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # OIDC to AWS (read the platform ECR) and Azure (push to ACR)
+    env:
+      LOCK_PATH: gitops/scripts/managed/full-profile-toolchain.lock
+      PLATFORM_REPO_PATH: microtodosuite/platform
+    steps:
+      - name: Mint a read-only gitops token
+        id: gitopstoken
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.gitops-reader-app-id }}
+          private-key: ${{ secrets.gitops-reader-app-key }}
+          owner: ${{ github.repository_owner }}
+          repositories: microservice-app-gitops
+
+      - name: Check out the toolchain lock (read-only, gitops only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository_owner }}/microservice-app-gitops
+          ref: ${{ inputs.gitops-ref }}
+          token: ${{ steps.gitopstoken.outputs.token }}
+          persist-credentials: false
+          path: gitops
+
+      - name: Resolve the platform ECR repository and the ACR
+        id: registry
+        shell: bash
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          AWS_REGION_INPUT: ${{ inputs.aws-region }}
+          ACR_NAME: ${{ inputs.acr-name }}
+        run: |
+          set -euo pipefail
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || {
+            echo "::error::vars.AWS_ACCOUNT_ID is not a 12-digit account id"; exit 1
+          }
+          [[ "$ACR_NAME" =~ ^[a-zA-Z0-9]{5,50}$ ]] || {
+            echo "::error::acr-name is not a valid ACR name"; exit 1
+          }
+          registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION_INPUT}.amazonaws.com"
+          echo "repository=${registry}/${PLATFORM_REPO_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: Install checksum-locked oras, crane and cosign from the toolchain lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          bindir="$RUNNER_TEMP/bin"; mkdir -p "$bindir"
+          fetch() {
+            local name="$1" out="$2" url sum
+            url="$(jq -er --arg n "$name" '.tools[] | select(.name == $n) | .source' "$LOCK_PATH")"
+            sum="$(jq -er --arg n "$name" '.tools[] | select(.name == $n) | .sha256' "$LOCK_PATH")"
+            [[ "$url" == https://* && "$sum" =~ ^[0-9a-f]{64}$ ]] || {
+              echo "::error::${name} is not checksum-locked in the toolchain lock"; exit 1
+            }
+            curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location "$url" -o "$out"
+            printf '%s  %s\n' "$sum" "$out" | sha256sum --check --strict -
+          }
+
+          # oras: copies each image with its referrers (-r), no rebuild.
+          [[ "$(jq -r '.tools[] | select(.name == "oras") | .name' "$LOCK_PATH")" == oras ]] || {
+            echo "::error::oras is missing from the toolchain lock"; exit 1
+          }
+          fetch oras oras.tgz
+          tar -xzf oras.tgz -C "$bindir" oras
+
+          # crane: reads manifest digests on both sides for the equality proof.
+          fetch crane crane.tgz
+          tar -xzf crane.tgz -C "$bindir" crane
+
+          # cosign: verification only; this job never produces a signature.
+          fetch cosign "$bindir/cosign"
+          chmod +x "$bindir/cosign"
+
+          echo "$bindir" >> "$GITHUB_PATH"
+          oras version
+          crane version || true
+          cosign version
+
+      - name: Configure AWS credentials through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: >-
+            ${{ inputs.mirror-role-arn != ''
+              && inputs.mirror-role-arn
+              || format('arn:aws:iam::{0}:role/microtodosuite-platform-mirror', vars.AWS_ACCOUNT_ID) }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
+
+      - name: Log in to Azure through GitHub OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v2
+        with:
+          client-id: ${{ inputs.azure-client-id }}
+          tenant-id: ${{ inputs.azure-tenant-id }}
+          subscription-id: ${{ inputs.azure-subscription-id }}
+
+      - name: Log in to ACR
+        id: acr
+        shell: bash
+        env:
+          ACR_NAME: ${{ inputs.acr-name }}
+        run: |
+          set -euo pipefail
+          az acr login --name "$ACR_NAME"
+          echo "login-server=$(az acr show --name "$ACR_NAME" --query loginServer --output tsv)" >> "$GITHUB_OUTPUT"
+
+      - name: Copy the signed platform graph from ECR to ACR without rebuilding
+        shell: bash
+        env:
+          PLATFORM_REPOSITORY: ${{ steps.registry.outputs.repository }}
+          ACR_LOGIN_SERVER: ${{ steps.acr.outputs.login-server }}
+        run: |
+          set -euo pipefail
+          acr_repo="${ACR_LOGIN_SERVER}/${PLATFORM_REPOSITORY#*/}"
+          evidence="$RUNNER_TEMP/acr-mirror-digests.json"
+          errfile="$RUNNER_TEMP/crane.err"
+          identity='^https://github\.com/MicroTodoSuite/\.github/\.github/workflows/mirror-platform-images\.yml@'
+
+          # Digest of a reference, or empty when the manifest does not exist.
+          # Any other registry failure (auth, network) fails the copy.
+          digest_or_absent() {
+            if crane digest "$1" 2>"$errfile"; then return 0; fi
+            if grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN|NOT_FOUND|404' "$errfile"; then return 0; fi
+            cat "$errfile" >&2; return 1
+          }
+          referrers() { oras discover --format json "$1" | jq -c '[.. | objects | .digest? // empty] | unique'; }
+
+          # Validate the whole lock, and that every image is already in ECR at
+          # its locked digest, before anything is written to ACR.
+          count="$(jq '.images | length' "$LOCK_PATH")"
+          [[ "$count" -gt 0 ]] || { echo "::error::the toolchain lock lists no platform images"; exit 1; }
+          for i in $(seq 0 $((count - 1))); do
+            id="$(jq -r ".images[$i].id" "$LOCK_PATH")"
+            upstreamDigest="$(jq -r ".images[$i].upstreamDigest" "$LOCK_PATH")"
+            mirrorTag="$(jq -r ".images[$i].mirrorTag" "$LOCK_PATH")"
+            [[ "$upstreamDigest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "::error::${id}: '${upstreamDigest}' is a mutable reference, not a sha256 digest"; exit 1
+            }
+            [[ "$mirrorTag" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]] || {
+              echo "::error::${id}: invalid mirrorTag '${mirrorTag}'"; exit 1
+            }
+            ecrDigest="$(crane digest "${PLATFORM_REPOSITORY}@${upstreamDigest}")" || {
+              echo "::error::${id}: ${upstreamDigest} is missing from ${PLATFORM_REPOSITORY}"; exit 1
+            }
+            [[ "$ecrDigest" == "$upstreamDigest" ]] || {
+              echo "::error::${id}: ECR digest ${ecrDigest} != locked ${upstreamDigest}"; exit 1
+            }
+          done
+
+          echo '{"source":"'"$PLATFORM_REPOSITORY"'","mirror":"'"$acr_repo"'","images":[]}' > "$evidence"
+          echo "copying ${count} signed platform images from ${PLATFORM_REPOSITORY} to ${acr_repo}"
+
+          for i in $(seq 0 $((count - 1))); do
+            id="$(jq -r ".images[$i].id" "$LOCK_PATH")"
+            upstreamDigest="$(jq -r ".images[$i].upstreamDigest" "$LOCK_PATH")"
+            mirrorTag="$(jq -r ".images[$i].mirrorTag" "$LOCK_PATH")"
+            src="${PLATFORM_REPOSITORY}@${upstreamDigest}"
+            dst="${acr_repo}:${mirrorTag}"
+            echo "::group::${id}  ${src} -> ${dst}"
+
+            # The complete OCI graph with its referrers, never rebuilt.
+            oras cp -r "$src" "$dst"
+            acrDigest="$(crane digest "$dst")"
+            [[ "$acrDigest" == "$upstreamDigest" ]] || {
+              echo "::error::${id}: ACR digest ${acrDigest} != ECR ${upstreamDigest}"; exit 1
+            }
+            [[ "$(referrers "$src")" == "$(referrers "${acr_repo}@${upstreamDigest}")" ]] || {
+              echo "::error::${id}: ACR referrers differ from ECR"; exit 1
+            }
+
+            # Tag-scheme signature (.sig), attestation (.att) and SBOM (.sbom)
+            # travel with the image when present in ECR, and must land in ACR
+            # at the same digest; absent ones are skipped, never invented.
+            copied='{}'
+            for kind in sig att sbom; do
+              tag="sha256-${upstreamDigest#sha256:}.${kind}"
+              srcDigest="$(digest_or_absent "${PLATFORM_REPOSITORY}:${tag}")"
+              [[ -n "$srcDigest" ]] || continue
+              oras cp -r "${PLATFORM_REPOSITORY}:${tag}" "${acr_repo}:${tag}"
+              dstDigest="$(crane digest "${acr_repo}:${tag}")"
+              [[ "$dstDigest" == "$srcDigest" ]] || {
+                echo "::error::${id}: ACR .${kind} digest ${dstDigest} != ECR ${srcDigest}"; exit 1
+              }
+              copied="$(jq -c --arg k "$kind" --arg d "$srcDigest" '.[$k] = $d' <<<"$copied")"
+            done
+
+            # The copied signature must verify in ACR as the platform-mirror identity.
+            cosign verify \
+              --certificate-identity-regexp "$identity" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "${acr_repo}@${upstreamDigest}" >/dev/null
+
+            jq --arg id "$id" --arg digest "$upstreamDigest" --arg mirror "$dst" --argjson tags "$copied" \
+               '.images += [{"id":$id,"digest":$digest,"mirror":$mirror,"tagScheme":$tags}]' \
+               "$evidence" > "$evidence.tmp" && mv "$evidence.tmp" "$evidence"
+            echo "::endgroup::"
+          done
+
+          echo "copied=$(jq '.images | length' "$evidence")" >> "$GITHUB_OUTPUT"
+          echo "copied and verified $(jq '.images | length' "$evidence") platform images in ACR"
+
+      - name: Upload the ECR/ACR digest evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: platform-image-acr-mirror-digests
+          path: ${{ runner.temp }}/acr-mirror-digests.json
           if-no-files-found: error

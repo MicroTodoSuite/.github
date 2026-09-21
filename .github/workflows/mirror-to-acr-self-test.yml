@@ -1,0 +1,39 @@
+name: service ACR mirror self-test
+
+# Runs the service mirror's contract test on every change to the mirror, its
+# promote.yml integration or the test itself, the same self-test pattern as
+# mirror-platform-images-self-test.yml. The mirror needs a live DR registry and
+# the AWS/Azure OIDC identities (spec 009), so it cannot run in CI; this proves
+# its contract holds at the same commit.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/mirror-to-acr.yml"
+      - ".github/workflows/mirror-to-acr-self-test.yml"
+      - ".github/workflows/promote.yml"
+      - "tests/workflows/mirror-to-acr.bats"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mirror-to-acr.yml"
+      - ".github/workflows/mirror-to-acr-self-test.yml"
+      - ".github/workflows/promote.yml"
+      - "tests/workflows/mirror-to-acr.bats"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-test:
+    name: contract test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the service mirror contract test
+        run: bash tests/workflows/mirror-to-acr.bats

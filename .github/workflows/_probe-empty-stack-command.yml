@@ -1,0 +1,11 @@
+name: _probe-empty-stack-command
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  probe:
+    uses: ./.github/workflows/stack-tests.yml
+    with:
+      gate-name: probe
+      compose-file: probe-compose.yaml
+      stack-command: ""

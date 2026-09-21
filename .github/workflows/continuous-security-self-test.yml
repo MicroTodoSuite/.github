@@ -1,0 +1,32 @@
+name: continuous-security contract self-test
+
+# Runs the continuous-security contract (gitops spec 009 T143) at this commit,
+# so a change to the scheduled assessment that drops a required guarantee — a
+# surface, an explicit BLOCKED, deduplicated issue routing, OIDC without static
+# credentials, a SHA pin, the read-only boundary — fails its own pull request.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/continuous-security.yml"
+      - ".github/workflows/continuous-security-self-test.yml"
+      - "tests/workflows/continuous-security.bats"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/continuous-security.yml"
+      - ".github/workflows/continuous-security-self-test.yml"
+      - "tests/workflows/continuous-security.bats"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run the continuous-security contract
+        run: tests/workflows/continuous-security.bats

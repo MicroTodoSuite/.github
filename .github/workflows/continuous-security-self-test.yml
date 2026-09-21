@@ -1,9 +1,9 @@
 name: continuous-security contract self-test
 
 # Runs the continuous-security contract (gitops spec 009 T143) at this commit,
-# so a change to the scheduled assessment that drops a required guarantee — a
+# so a change to the scheduled assessment that drops a required guarantee (a
 # surface, an explicit BLOCKED, deduplicated issue routing, OIDC without static
-# credentials, a SHA pin, the read-only boundary — fails its own pull request.
+# credentials, a SHA pin, the read-only boundary) fails its own pull request.
 
 on:
   pull_request:

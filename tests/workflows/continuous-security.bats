@@ -124,4 +124,4 @@ done
 grep -Fq "tests/workflows/continuous-security.bats" "$self_test" \
   || fail "the self-test must execute this contract"
 
-echo "continuous-security-contract: OK — reusable and caller-scheduled, source/image/cluster surfaces with explicit PASS/FAIL/BLOCKED, digests read from GitOps through a read-only App token, findings routed to one deduplicated issue in the owning repository, OIDC with no static credentials, SHA-pinned actions, and no cluster mutation."
+echo "continuous-security-contract: OK: reusable and caller-scheduled, source/image/cluster surfaces with explicit PASS/FAIL/BLOCKED, digests read from GitOps through a read-only App token, findings routed to one deduplicated issue in the owning repository, OIDC with no static credentials, SHA-pinned actions, and no cluster mutation."

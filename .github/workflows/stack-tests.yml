@@ -79,6 +79,17 @@ jobs:
         shell: bash
         run: ${{ inputs.ready-command }}
 
+      - name: Reject an empty stack-command
+        shell: bash
+        env:
+          STACK_COMMAND: ${{ inputs.stack-command }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${STACK_COMMAND// /}" ]]; then
+            echo "::error::stack-command must not be empty or blank -- an empty run: step succeeds having run no ${{ inputs.gate-name }} gate (FR-017: a gate must fail visibly, never pass silently)"
+            exit 1
+          fi
+
       - name: Run ${{ inputs.gate-name }} gate
         shell: bash
         run: ${{ inputs.stack-command }}

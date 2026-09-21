@@ -32,9 +32,8 @@ on:
         description: >-
           Rollout strategy the destination overlay uses. `rolling` for
           economical dev/staging and full dev/staging; `canary` only for full
-          AWS production (spec 009 T104/T110). Validated against the
-          profile/destination below so a canary can never target a rolling
-          destination.
+          AWS production; `dr-rolling` only for AKS DR after production
+          validation (spec 009 T104/T110/T131).
         default: rolling
         type: string
       image-digest:
@@ -55,51 +54,135 @@ on:
       aws-region:
         default: us-east-1
         type: string
+      dr-ecr-reader-role-arn:
+        description: OIDC role allowed to read the production ECR artifact for DR
+        default: ""
+        type: string
+      dr-seed-role-arn:
+        description: OIDC role allowed to read the four approved AWS secrets
+        default: ""
+        type: string
+      dr-acr-name:
+        description: Terraform-owned ACR registry name for the DR mirror
+        default: ""
+        type: string
+      dr-acr-client-id:
+        description: Federated Azure identity client ID scoped to ACR push
+        default: ""
+        type: string
+      dr-seed-client-id:
+        description: Federated Azure identity client ID scoped to Key Vault get/set
+        default: ""
+        type: string
+      dr-key-vault-name:
+        description: Terraform-owned DR Key Vault name
+        default: ""
+        type: string
+      dr-github-environment:
+        description: Approved GitHub environment trusted by the DR seed role
+        default: ""
+        type: string
     secrets:
       gitops-promote-app-id:
         description: >-
           GitHub App id of the gitops promoter App. Callers wire the
           organization secret GITOPS_PROMOTE_APP_ID here (spec 009 T099).
-        required: true
+        required: false
       gitops-promote-app-key:
         description: >-
           GitHub App private key (PEM) of the gitops promoter App. Callers wire
           the organization secret GITOPS_PROMOTE_APP_KEY here (spec 009 T099).
-        required: true
+        required: false
 
 permissions:
   contents: read
   id-token: write
 
 jobs:
-  open-promotion-pr:
-    runs-on: ubuntu-latest
+  validate:
+    runs-on: ubuntu-24.04
     steps:
       - name: Validate digest, profile, destination and strategy
         shell: bash
         env:
+          ENVIRONMENT: ${{ inputs.environment }}
           PROFILE: ${{ inputs.profile }}
           DESTINATION: ${{ inputs.destination }}
           STRATEGY: ${{ inputs.strategy }}
+          IMAGE_DIGEST: ${{ inputs.image-digest }}
         run: |
           set -euo pipefail
-          [[ "${{ inputs.image-digest }}" =~ ^sha256:[a-f0-9]{64}$ ]] \
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] \
             || { echo "::error::image-digest is not sha256:<64 hex>"; exit 1; }
 
-          # Profile, destination and strategy are an allowlisted tuple, not free
-          # text: a digest can only ever land on a registered destination, and a
-          # canary can only ever target full AWS production (T104/T110).
+          # Preserve the existing AWS tuples. DR adds only the production/full
+          # rolling destination and never repeats the AWS canary (T131).
           case "$PROFILE" in economical|full) ;; *) echo "::error::unknown profile: $PROFILE"; exit 1 ;; esac
-          case "$STRATEGY" in rolling|canary) ;; *) echo "::error::unknown strategy: $STRATEGY"; exit 1 ;; esac
-          case "$PROFILE/$DESTINATION" in
-            economical/eks-dev) ;;
-            full/eks-full-dev|full/eks-full-staging|full/eks-full-prod) ;;
-            *) echo "::error::unregistered profile/destination tuple: $PROFILE/$DESTINATION"; exit 1 ;;
-          esac
-          if [[ "$STRATEGY" == "canary" && "$PROFILE/$DESTINATION" != "full/eks-full-prod" ]]; then
-            echo "::error::canary is only valid for full/eks-full-prod, not $PROFILE/$DESTINATION"; exit 1
+          case "$STRATEGY" in rolling|canary|dr-rolling) ;; *) echo "::error::unknown strategy: $STRATEGY"; exit 1 ;; esac
+          if [[ "$DESTINATION" == "aks-dr" ]]; then
+            [[ "$ENVIRONMENT/$PROFILE/$STRATEGY" == "prod/full/dr-rolling" ]] || {
+              echo "::error::AKS DR requires prod/full/aks-dr/dr-rolling"; exit 1
+            }
+          else
+            case "$PROFILE/$DESTINATION" in
+              economical/eks-dev) ;;
+              full/eks-full-dev|full/eks-full-staging|full/eks-full-prod) ;;
+              *) echo "::error::unregistered profile/destination tuple: $PROFILE/$DESTINATION"; exit 1 ;;
+            esac
+            if [[ "$STRATEGY" == "dr-rolling" ]]; then
+              echo "::error::dr-rolling is only valid for aks-dr"; exit 1
+            fi
+            if [[ "$STRATEGY" == "canary" && "$PROFILE/$DESTINATION" != "full/eks-full-prod" ]]; then
+              echo "::error::canary is only valid for full/eks-full-prod"; exit 1
+            fi
           fi
 
+      - name: Validate DR identity inputs
+        if: ${{ inputs.destination == 'aks-dr' }}
+        shell: bash
+        env:
+          ECR_READER_ROLE_ARN: ${{ inputs.dr-ecr-reader-role-arn }}
+          SEED_ROLE_ARN: ${{ inputs.dr-seed-role-arn }}
+          ACR_NAME: ${{ inputs.dr-acr-name }}
+          ACR_CLIENT_ID: ${{ inputs.dr-acr-client-id }}
+          SEED_CLIENT_ID: ${{ inputs.dr-seed-client-id }}
+          KEY_VAULT_NAME: ${{ inputs.dr-key-vault-name }}
+          GITHUB_ENVIRONMENT: ${{ inputs.dr-github-environment }}
+        run: |
+          set -euo pipefail
+          for name in ECR_READER_ROLE_ARN SEED_ROLE_ARN ACR_NAME ACR_CLIENT_ID SEED_CLIENT_ID KEY_VAULT_NAME GITHUB_ENVIRONMENT; do
+            [[ -n "${!name}" ]] || { echo "::error::missing DR input: $name"; exit 1; }
+          done
+
+  mirror-to-acr:
+    needs: validate
+    if: ${{ inputs.destination == 'aks-dr' }}
+    uses: ./.github/workflows/mirror-to-acr.yml
+    with:
+      service-name: ${{ inputs.service-name }}
+      image-digest: ${{ inputs.image-digest }}
+      image-ref: ${{ inputs.image-ref }}
+      ecr-reader-role-arn: ${{ inputs.dr-ecr-reader-role-arn }}
+      acr-name: ${{ inputs.dr-acr-name }}
+      azure-client-id: ${{ inputs.dr-acr-client-id }}
+      aws-region: ${{ inputs.aws-region }}
+
+  sync-dr-secrets:
+    needs: mirror-to-acr
+    if: ${{ inputs.destination == 'aks-dr' }}
+    uses: ./.github/workflows/sync-dr-secrets.yml
+    with:
+      github-environment: ${{ inputs.dr-github-environment }}
+      aws-region: ${{ inputs.aws-region }}
+      seed-role-arn: ${{ inputs.dr-seed-role-arn }}
+      azure-client-id: ${{ inputs.dr-seed-client-id }}
+      key-vault-name: ${{ inputs.dr-key-vault-name }}
+
+  open-promotion-pr:
+    needs: validate
+    if: ${{ inputs.destination != 'aks-dr' }}
+    runs-on: ubuntu-latest
+    steps:
       # Cosign reads the signature artifact from the private ECR registry, so the
       # job must authenticate to ECR (OIDC) before verifying.
       - name: Configure AWS credentials (OIDC)
@@ -123,6 +206,18 @@ jobs:
             --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
             >/dev/null \
             || { echo "::error::no valid signature for ${{ inputs.image-ref }} — refusing to promote"; exit 1; }
+
+      - name: Require GitOps promotion App credentials
+        shell: bash
+        env:
+          APP_ID: ${{ secrets.gitops-promote-app-id }}
+          APP_KEY: ${{ secrets.gitops-promote-app-key }}
+        run: |
+          set -euo pipefail
+          [[ -n "$APP_ID" && -n "$APP_KEY" ]] || {
+            echo "::error::GitOps promotion App credentials are required for an AWS destination"
+            exit 1
+          }
 
       - name: Generate gitops token (GitHub App)
         id: apptoken

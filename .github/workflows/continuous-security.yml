@@ -1,0 +1,348 @@
+name: continuous security
+
+# Scheduled source, image and cluster vulnerability assessment with actionable
+# issue routing (gitops spec 009 T146, FR-035). Trivy in ci.yml scans what a
+# push builds, and Trivy Operator scans what a cluster runs; neither re-assesses
+# an artifact that was already published when a CVE is disclosed days later.
+# This workflow closes that gap on a schedule.
+#
+# The schedule lives in each CALLER, never here: GitHub does not fire
+# `schedule` for a reusable workflow, so a cron in this file would silently
+# never run. A caller declares `on: schedule:` and calls this workflow, and
+# grants `issues: write` so a finding can be routed.
+#
+# Three surfaces, each reported as PASS, FAIL or BLOCKED, the same explicit
+# vocabulary the lane's collectors use (microservice-app-gitops
+# scripts/managed/lib/verify-common.sh). A surface without credentials is
+# BLOCKED and says so: it is never counted as a pass, and it never fails the run
+# as though the platform were broken.
+#
+#   source  - the caller's own checkout. Always runs; needs no credential.
+#   image   - the digests the GitOps repository declares for this service, which
+#             is what "running artifact" means here. Read through a read-only
+#             App token scoped to that one repository, the same pattern
+#             mirror-platform-images.yml uses for the locked image set.
+#   cluster - the lane's existing read-only collector, verify-security.sh. This
+#             workflow starts no new imperative path into a cluster.
+#
+# Like mirror-platform-images.yml, the parts that need infrastructure nobody has
+# built yet are authored and contract-tested but inactive: the image surface
+# needs the reader role and published digests, and the cluster surface needs a
+# cluster with Argo CD (spec 009 T063-T065). Both report BLOCKED until then,
+# while the source surface runs from the first scheduled execution.
+
+on:
+  workflow_dispatch:
+    inputs:
+      service-name:
+        description: Service whose declared digests to re-assess; empty for a repository with no image
+        type: string
+        default: ""
+      image-repository:
+        description: Registry repository holding that service's images; empty leaves the image surface BLOCKED
+        type: string
+        default: ""
+      aws-region:
+        description: Region of the image registry
+        type: string
+        default: us-east-1
+      image-reader-role-arn:
+        description: Read-only ECR role assumed through OIDC; empty leaves the image surface BLOCKED
+        type: string
+        default: ""
+      cluster-assessment:
+        description: Run the GitOps read-only cluster collector; requires a reachable cluster
+        type: boolean
+        default: false
+      gitops-ref:
+        description: The reviewed microservice-app-gitops ref to read declared digests from
+        type: string
+        default: main
+  workflow_call:
+    inputs:
+      service-name:
+        type: string
+        default: ""
+      image-repository:
+        type: string
+        default: ""
+      aws-region:
+        type: string
+        default: us-east-1
+      image-reader-role-arn:
+        type: string
+        default: ""
+      cluster-assessment:
+        type: boolean
+        default: false
+      gitops-ref:
+        type: string
+        default: main
+    secrets:
+      gitops-reader-app-id:
+        description: GitHub App id with read-only contents on microservice-app-gitops
+        required: false
+      gitops-reader-app-key:
+        description: GitHub App private key (PEM)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  assess:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # OIDC to the read-only image role, no static credentials
+      issues: write # route an actionable finding into the owning repository
+    env:
+      FINDINGS: ${{ github.workspace }}/continuous-security-findings.md
+      ISSUE_LABEL: continuous-security
+      ISSUE_TITLE: "Continuous security: unresolved HIGH/CRITICAL findings"
+    steps:
+      - name: Check out the repository under assessment
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Start the assessment record
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > "$FINDINGS"
+
+      # --- source ------------------------------------------------------------
+      # Fixable HIGH and CRITICAL only, the same threshold spec 008 chose for
+      # Trivy Operator: an unfixable finding is not something this repository's
+      # owner can act on today, and routing it would be noise, not ownership.
+      - name: Assess the source for newly disclosed vulnerabilities
+        id: source
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          output: source-findings.txt
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          version: v0.72.0
+
+      - name: Record the source result
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.source.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$OUTCOME" == success ]]; then
+            echo "PASS: source - no fixable HIGH or CRITICAL finding" >> "$FINDINGS"
+          else
+            echo "FAIL: source - fixable HIGH or CRITICAL findings below" >> "$FINDINGS"
+            echo '```' >> "$FINDINGS"
+            head -c 20000 source-findings.txt >> "$FINDINGS" || true
+            echo '```' >> "$FINDINGS"
+          fi
+
+      # --- image -------------------------------------------------------------
+      # The `secrets` context is not available in an `if`, so whether the
+      # read-only App credentials were wired is resolved in a step, where the
+      # context is available, and read back as a step output.
+      - name: Detect the read-only GitOps credentials
+        id: gitopscreds
+        shell: bash
+        env:
+          APP_ID: ${{ secrets.gitops-reader-app-id }}
+          APP_KEY: ${{ secrets.gitops-reader-app-key }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$APP_ID" && -n "$APP_KEY" ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint a read-only GitOps token
+        id: gitopstoken
+        if: ${{ inputs.service-name != '' && inputs.image-reader-role-arn != '' && steps.gitopscreds.outputs.present == 'true' }}
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.gitops-reader-app-id }}
+          private-key: ${{ secrets.gitops-reader-app-key }}
+          owner: ${{ github.repository_owner }}
+          repositories: microservice-app-gitops
+
+      - name: Check out the declared desired state (read-only, GitOps only)
+        if: ${{ steps.gitopstoken.outcome == 'success' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository_owner }}/microservice-app-gitops
+          ref: ${{ inputs.gitops-ref }}
+          token: ${{ steps.gitopstoken.outputs.token }}
+          persist-credentials: false
+          path: gitops
+
+      - name: Resolve the digests the GitOps repository declares
+        id: digests
+        if: ${{ steps.gitopstoken.outcome == 'success' }}
+        shell: bash
+        env:
+          SERVICE_NAME: ${{ inputs.service-name }}
+        run: |
+          set -euo pipefail
+          # Every overlay that declares a digest for this service, deduplicated:
+          # one image is promoted unchanged across environments, so scanning
+          # each distinct digest once is the whole running set.
+          grep -rhoE 'digest: sha256:[a-f0-9]{64}' \
+            "gitops/apps/${SERVICE_NAME}/profiles"/*/overlays/*/kustomization.yaml 2>/dev/null \
+            | awk '{print $2}' | sort -u > declared-digests.txt || true
+          count="$(wc -l < declared-digests.txt | tr -d ' ')"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+      - name: Assume the read-only image role
+        if: ${{ steps.digests.outputs.count != '' && steps.digests.outputs.count != '0' }}
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ inputs.image-reader-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Log in to the image registry
+        if: ${{ steps.digests.outputs.count != '' && steps.digests.outputs.count != '0' }}
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
+
+      - name: Assess every declared image digest
+        id: image
+        if: ${{ steps.digests.outputs.count != '' && steps.digests.outputs.count != '0' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          IMAGE_REPOSITORY: ${{ inputs.image-repository }}
+        run: |
+          set -euo pipefail
+          # The checksum-locked Trivy binary, the release and checksum
+          # microservice-app-gitops scripts/managed/full-profile-toolchain.lock
+          # records, installed the same way mirror-platform-images.yml installs
+          # its tooling. A loop over digests is why this is the binary and not
+          # the action: an action cannot iterate a resolved list.
+          bindir="$RUNNER_TEMP/bin"; mkdir -p "$bindir"
+          trivyurl="https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz"
+          trivysum="2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location "$trivyurl" -o trivy.tgz
+          printf '%s  %s\n' "$trivysum" trivy.tgz | sha256sum --check --strict -
+          tar -xzf trivy.tgz -C "$bindir" trivy
+          export PATH="$bindir:$PATH"
+
+          status=0
+          : > image-findings.txt
+          while IFS= read -r digest; do
+            [[ -n "$digest" ]] || continue
+            echo "== ${IMAGE_REPOSITORY}@${digest}" >> image-findings.txt
+            trivy image --severity HIGH,CRITICAL --ignore-unfixed --format table \
+              --exit-code 1 "${IMAGE_REPOSITORY}@${digest}" >> image-findings.txt 2>&1 || status=1
+          done < declared-digests.txt
+          exit "$status"
+
+      - name: Record the image result
+        shell: bash
+        env:
+          SERVICE_NAME: ${{ inputs.service-name }}
+          IMAGE_REPOSITORY: ${{ inputs.image-repository }}
+          ROLE_ARN: ${{ inputs.image-reader-role-arn }}
+          DIGEST_COUNT: ${{ steps.digests.outputs.count }}
+          OUTCOME: ${{ steps.image.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SERVICE_NAME" || -z "$IMAGE_REPOSITORY" ]]; then
+            echo "BLOCKED: image - this repository declares no service image to assess" >> "$FINDINGS"
+          elif [[ -z "$ROLE_ARN" ]]; then
+            echo "BLOCKED: image - no read-only image role is configured for this caller" >> "$FINDINGS"
+          elif [[ -z "$DIGEST_COUNT" ]]; then
+            echo "BLOCKED: image - the declared desired state could not be read" >> "$FINDINGS"
+          elif [[ "$DIGEST_COUNT" == 0 ]]; then
+            echo "BLOCKED: image - the GitOps repository declares no digest for ${SERVICE_NAME} yet" >> "$FINDINGS"
+          elif [[ "$OUTCOME" == success ]]; then
+            echo "PASS: image - ${DIGEST_COUNT} declared digest(s) carry no fixable HIGH or CRITICAL finding" >> "$FINDINGS"
+          else
+            echo "FAIL: image - a declared digest carries fixable HIGH or CRITICAL findings" >> "$FINDINGS"
+            echo '```' >> "$FINDINGS"
+            head -c 20000 image-findings.txt >> "$FINDINGS" || true
+            echo '```' >> "$FINDINGS"
+          fi
+
+      # --- cluster -----------------------------------------------------------
+      # The lane already owns a read-only cluster collector with this exact
+      # vocabulary; this workflow runs it rather than opening a second path into
+      # a cluster. It exits non-zero when it cannot reach one, which is BLOCKED
+      # in its own output and reported as such here.
+      - name: Assess the cluster through the read-only collector
+        id: cluster
+        if: ${{ inputs.cluster-assessment && steps.gitopstoken.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash gitops/scripts/managed/verify-security.sh 2>&1 | tee cluster-findings.txt
+
+      - name: Record the cluster result
+        shell: bash
+        env:
+          REQUESTED: ${{ inputs.cluster-assessment }}
+          OUTCOME: ${{ steps.cluster.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$REQUESTED" != true ]]; then
+            echo "BLOCKED: cluster - no cluster assessment is configured for this caller" >> "$FINDINGS"
+          elif [[ "$OUTCOME" != success && "$OUTCOME" != failure ]]; then
+            echo "BLOCKED: cluster - the collector did not run" >> "$FINDINGS"
+          elif grep -q 'VERDICT: BLOCKED' cluster-findings.txt 2>/dev/null; then
+            echo "BLOCKED: cluster - the collector could not reach a cluster" >> "$FINDINGS"
+          elif [[ "$OUTCOME" == success ]]; then
+            echo "PASS: cluster - the read-only collector reported no failure" >> "$FINDINGS"
+          else
+            echo "FAIL: cluster - the read-only collector reported a failure" >> "$FINDINGS"
+            echo '```' >> "$FINDINGS"
+            head -c 20000 cluster-findings.txt >> "$FINDINGS" || true
+            echo '```' >> "$FINDINGS"
+          fi
+
+      # --- routing -----------------------------------------------------------
+      # One issue per repository, reused. A daily schedule that opened a new
+      # issue for the same CVE would bury the signal in its own noise, so a
+      # recurring finding comments on the open issue instead, and a clean run
+      # closes it.
+      - name: Route the findings into the owning repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          echo "--- assessment ---"
+          cat "$FINDINGS"
+
+          existing="$(gh issue list --repo "$TARGET_REPO" --label "$ISSUE_LABEL" --state open \
+            --json number --jq '.[0].number // empty' || true)"
+
+          if grep -q '^FAIL:' "$FINDINGS"; then
+            {
+              echo "Assessed on $(date -u +%Y-%m-%dT%H:%M:%SZ) by [this run]($RUN_URL)."
+              echo
+              cat "$FINDINGS"
+            } > issue-body.md
+            if [[ -n "$existing" ]]; then
+              gh issue comment "$existing" --repo "$TARGET_REPO" --body-file issue-body.md
+              echo "recurring findings recorded on issue #${existing}"
+            else
+              gh issue create --repo "$TARGET_REPO" --title "$ISSUE_TITLE" \
+                --label "$ISSUE_LABEL" --body-file issue-body.md
+            fi
+            exit 1
+          fi
+
+          if [[ -n "$existing" ]]; then
+            gh issue close "$existing" --repo "$TARGET_REPO" \
+              --comment "No fixable HIGH or CRITICAL finding remains as of [this run]($RUN_URL)."
+          fi
+          echo "no actionable finding"

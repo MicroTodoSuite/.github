@@ -1,0 +1,275 @@
+name: mirror service to ACR
+
+# Mirrors one production-validated service artifact from ECR to the
+# disaster-recovery Azure Container Registry (gitops spec 009 T131, research.md
+# Decision 13, release-promotion-contract.md rules 8 and 9). ci.yml stays the
+# single build point: this workflow copies the complete already-signed OCI graph
+# (manifest, layers, signature, attestation, SBOM) by digest, never rebuilds or
+# re-signs it, verifies the Cosign signature and SPDX attestation in ACR against
+# the same service CI identity Kyverno admits, and fails unless the ACR manifest
+# digest equals the ECR one. AKS manifests then use the ACR repository at that
+# same digest.
+#
+# Identity boundary: AWS and Azure are both reached through GitHub OIDC alone.
+# The caller passes the Terraform-owned ECR reader role and the Azure
+# federated application; no static credential, no caller secret and no
+# account id lives here. The GitOps repository is public and is read without
+# any credential, only to prove the digest is the one production validated and
+# to read the checksum-locked toolchain.
+#
+# It cannot run until Terraform (ops, spec 009) has created the DR registry, the
+# federated Azure identity scoped to push to it and the ECR reader role whose
+# trust policy names this workflow. Until then it is authored and
+# contract-tested but inactive.
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        description: One of the five services; its production overlay must declare the digest
+        required: true
+        type: string
+      image-digest:
+        description: sha256:<64hex> that production already runs
+        required: true
+        type: string
+      image-ref:
+        description: ECR repository@digest, exactly as the production overlay declares it
+        required: true
+        type: string
+      ecr-reader-role-arn:
+        description: Terraform-owned OIDC role that can read the service ECR repository
+        required: true
+        type: string
+      aws-region:
+        default: us-east-1
+        type: string
+      acr-name:
+        description: Name of the disaster-recovery Azure Container Registry
+        required: true
+        type: string
+      azure-client-id:
+        description: Client id of the federated Azure identity with push scope on the DR registry
+        required: true
+        type: string
+      azure-tenant-id:
+        required: true
+        type: string
+      azure-subscription-id:
+        required: true
+        type: string
+      gitops-repo:
+        default: MicroTodoSuite/microservice-app-gitops
+        type: string
+      gitops-ref:
+        description: The reviewed GitOps ref whose production overlay is authoritative
+        default: main
+        type: string
+    outputs:
+      acr-image-ref:
+        description: ACR repository@digest, the same digest as the ECR source
+        value: ${{ jobs.mirror.outputs.acr-image-ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # OIDC to AWS and Azure, no static credentials
+    concurrency:
+      group: mirror-to-acr-${{ inputs.service-name }}
+      cancel-in-progress: false
+    outputs:
+      acr-image-ref: ${{ steps.copy.outputs.acr-ref }}
+    env:
+      LOCK_PATH: gitops/scripts/managed/full-profile-toolchain.lock
+    steps:
+      - name: Check out the public GitOps repository (no credential)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.gitops-repo }}
+          ref: ${{ inputs.gitops-ref }}
+          persist-credentials: false
+          path: gitops
+
+      # Rule 8: only a production-validated digest may advance to DR. The
+      # production overlay in GitOps is the record of what production runs, so
+      # the input must be exactly the repository and digest it declares.
+      - name: Require a production-validated digest
+        shell: bash
+        env:
+          SERVICE_NAME: ${{ inputs.service-name }}
+          IMAGE_DIGEST: ${{ inputs.image-digest }}
+          IMAGE_REF: ${{ inputs.image-ref }}
+          GITOPS_DIR: gitops
+        run: |
+          set -euo pipefail
+          case "$SERVICE_NAME" in
+            auth-api|todos-api|users-api|frontend|log-message-processor) ;;
+            *) echo "::error::unknown service: $SERVICE_NAME"; exit 1 ;;
+          esac
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] \
+            || { echo "::error::image-digest is not sha256:<64 hex>"; exit 1; }
+
+          overlay="$GITOPS_DIR/apps/$SERVICE_NAME/profiles/full/overlays/prod/kustomization.yaml"
+          [[ -f "$overlay" ]] || { echo "::error::no production overlay for $SERVICE_NAME"; exit 1; }
+
+          # One "name newName digest" line per images[] entry of the overlay.
+          declared="$(awk '
+            function emit() { if (n != "") print n, nn, d; n = nn = d = "" }
+            /^images:[[:space:]]*$/ { i = 1; next }
+            i && /^[^[:space:]#]/ { emit(); i = 0 }
+            !i { next }
+            /^  - / { emit(); sub(/^  - /, "    ") }
+            /^    name:/ { n = $2 }
+            /^    newName:/ { nn = $2 }
+            /^    digest:/ { d = $2 }
+            END { emit() }
+          ' "$overlay" | tr -d "\"'" | awk -v s="$SERVICE_NAME" '$1 == s')"
+          [[ "$(grep -c . <<<"$declared")" == 1 ]] \
+            || { echo "::error::the production overlay must declare exactly one $SERVICE_NAME image"; exit 1; }
+          read -r _ declared_name declared_digest <<<"$declared"
+
+          if [[ "$declared_digest" != "$IMAGE_DIGEST" ]]; then
+            echo "::error::$IMAGE_DIGEST is not the digest production runs ($declared_digest)"; exit 1
+          fi
+          if [[ "$IMAGE_REF" != "$declared_name@$declared_digest" ]]; then
+            echo "::error::$IMAGE_REF is not the reference production runs ($declared_name@$declared_digest)"; exit 1
+          fi
+          echo "production validated $IMAGE_REF"
+
+      # Installed by checksum from the GitOps repository's own toolchain lock,
+      # the same pattern promote.yml uses for kustomize.
+      - name: Install checksum-locked oras, crane and cosign
+        shell: bash
+        run: |
+          set -euo pipefail
+          bindir="$RUNNER_TEMP/bin"; mkdir -p "$bindir"
+          # Downloads a locked tool and refuses it unless its sha256 matches.
+          fetch() {
+            curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location "$1" --output "$3"
+            printf '%s  %s\n' "$2" "$3" | sha256sum --check --strict -
+          }
+          fetch "$(jq -er '.tools[] | select(.name == "oras") | .source' "$LOCK_PATH")" \
+            "$(jq -er '.tools[] | select(.name == "oras") | .sha256' "$LOCK_PATH")" \
+            "$RUNNER_TEMP/oras.tgz"
+          tar -xzf "$RUNNER_TEMP/oras.tgz" -C "$bindir" oras
+          fetch "$(jq -er '.tools[] | select(.name == "crane") | .source' "$LOCK_PATH")" \
+            "$(jq -er '.tools[] | select(.name == "crane") | .sha256' "$LOCK_PATH")" \
+            "$RUNNER_TEMP/crane.tgz"
+          tar -xzf "$RUNNER_TEMP/crane.tgz" -C "$bindir" crane
+          fetch "$(jq -er '.tools[] | select(.name == "cosign") | .source' "$LOCK_PATH")" \
+            "$(jq -er '.tools[] | select(.name == "cosign") | .sha256' "$LOCK_PATH")" \
+            "$bindir/cosign"
+          chmod +x "$bindir/cosign"
+
+          echo "$bindir" >> "$GITHUB_PATH"
+          "$bindir/oras" version
+          "$bindir/crane" version
+          "$bindir/cosign" version
+
+      - name: Configure AWS credentials through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ inputs.ecr-reader-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
+
+      - name: Log in to Azure through GitHub OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v2
+        with:
+          client-id: ${{ inputs.azure-client-id }}
+          tenant-id: ${{ inputs.azure-tenant-id }}
+          subscription-id: ${{ inputs.azure-subscription-id }}
+
+      - name: Log in to the disaster-recovery registry
+        id: acr
+        shell: bash
+        env:
+          ACR_NAME: ${{ inputs.acr-name }}
+        run: |
+          set -euo pipefail
+          [[ "$ACR_NAME" =~ ^[a-z0-9]{5,50}$ ]] \
+            || { echo "::error::acr-name is not a valid registry name"; exit 1; }
+          az acr login --name "$ACR_NAME"
+          echo "login-server=${ACR_NAME}.azurecr.io" >> "$GITHUB_OUTPUT"
+
+      # Rule 9: copy the complete graph by digest, never rebuild. `oras cp -r`
+      # carries the manifest, its layers and every OCI referrer (signature,
+      # attestation and SBOM bundles). Cosign's tag-scheme artifacts
+      # (sha256-<hex>.sig/.att/.sbom) are separate tags, so each one present is
+      # copied too and an absent one is skipped rather than invented.
+      - name: Copy the signed service graph to ACR without rebuilding
+        id: copy
+        shell: bash
+        env:
+          SERVICE_NAME: ${{ inputs.service-name }}
+          IMAGE_DIGEST: ${{ inputs.image-digest }}
+          SOURCE_REF: ${{ inputs.image-ref }}
+          ACR_LOGIN_SERVER: ${{ steps.acr.outputs.login-server }}
+        run: |
+          set -euo pipefail
+          src_repo="${SOURCE_REF%@*}"
+          [[ "$SOURCE_REF" == "$src_repo@$IMAGE_DIGEST" ]] \
+            || { echo "::error::$SOURCE_REF is not pinned to $IMAGE_DIGEST"; exit 1; }
+          hex="${IMAGE_DIGEST#sha256:}"
+          dst_repo="$ACR_LOGIN_SERVER/microtodosuite/$SERVICE_NAME"
+
+          source_digest="$(crane digest "$SOURCE_REF")"
+          [[ "$source_digest" == "$IMAGE_DIGEST" ]] \
+            || { echo "::error::ECR resolves $SOURCE_REF to $source_digest"; exit 1; }
+
+          oras cp -r "$SOURCE_REF" "$dst_repo:prod-$hex"
+
+          for suffix in sig att sbom; do
+            tag="sha256-$hex.$suffix"
+            if probe="$(crane digest "$src_repo:$tag" 2>&1)"; then
+              oras cp -r "$src_repo:$tag" "$dst_repo:$tag"
+            elif grep -Eqi 'MANIFEST_UNKNOWN|NOT_FOUND|not found' <<<"$probe"; then
+              echo "no tag-scheme .$suffix artifact for $IMAGE_DIGEST in ECR; skipped"
+            else
+              echo "::error::could not read $src_repo:$tag: $probe"; exit 1
+            fi
+          done
+
+          # The mirrored manifest digest MUST equal the ECR one.
+          acr_digest="$(crane digest "$dst_repo:prod-$hex")"
+          if [[ "$acr_digest" != "$IMAGE_DIGEST" ]]; then
+            echo "::error::ACR manifest digest $acr_digest != ECR $IMAGE_DIGEST"; exit 1
+          fi
+          echo "acr-ref=$dst_repo@$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+
+      # Verified in ACR, not ECR: the copy is only usable if the signature and
+      # SPDX attestation travelled with it and still name the service CI
+      # identity Kyverno admits (infrastructure/kyverno/policies.yaml).
+      - name: Verify the signature and SBOM attestation in ACR
+        shell: bash
+        env:
+          SERVICE_NAME: ${{ inputs.service-name }}
+          ACR_REF: ${{ steps.copy.outputs.acr-ref }}
+          CI_IDENTITY: '^https://github\.com/MicroTodoSuite/\.github/\.github/workflows/ci\.yml@[0-9a-f]{40}$'
+        run: |
+          set -euo pipefail
+          service_repo="MicroTodoSuite/microservice-app-$SERVICE_NAME"
+          cosign verify "$ACR_REF" \
+            --certificate-identity-regexp "$CI_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-repository "$service_repo" \
+            --certificate-github-workflow-ref refs/heads/main \
+            --certificate-github-workflow-trigger push \
+            >/dev/null \
+            || { echo "::error::no valid service CI signature for $ACR_REF in ACR"; exit 1; }
+          cosign verify-attestation "$ACR_REF" --type spdxjson \
+            --certificate-identity-regexp "$CI_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-repository "$service_repo" \
+            --certificate-github-workflow-ref refs/heads/main \
+            --certificate-github-workflow-trigger push \
+            >/dev/null \
+            || { echo "::error::no valid SPDX attestation for $ACR_REF in ACR"; exit 1; }
+          echo "verified $ACR_REF: same digest, service CI signature and SPDX attestation"

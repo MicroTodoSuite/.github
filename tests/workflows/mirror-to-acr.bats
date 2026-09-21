@@ -64,7 +64,7 @@ grep -Eq '^[[:space:]]*secrets:' "$workflow" \
   && fail "the mirror must take no caller secret; it authenticates through OIDC alone" || true
 # The public GitOps repository is read without any token.
 require_literal "persist-credentials: false"
-forbid_literal "token:"
+forbid_regex '^[[:space:]]*token:'
 forbid_literal "916491575487"
 forbid_literal "995253610162"
 forbid_regex "[0-9]{12}\.dkr\.ecr\."

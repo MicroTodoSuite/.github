@@ -74,6 +74,14 @@ on:
         description: Federated Azure identity client ID scoped to Key Vault get/set
         default: ""
         type: string
+      dr-azure-tenant-id:
+        description: Approved Azure tenant ID for the DR federated identities
+        default: ""
+        type: string
+      dr-azure-subscription-id:
+        description: Approved Azure subscription ID holding ACR and Key Vault
+        default: ""
+        type: string
       dr-key-vault-name:
         description: Terraform-owned DR Key Vault name
         default: ""
@@ -146,11 +154,13 @@ jobs:
           ACR_NAME: ${{ inputs.dr-acr-name }}
           ACR_CLIENT_ID: ${{ inputs.dr-acr-client-id }}
           SEED_CLIENT_ID: ${{ inputs.dr-seed-client-id }}
+          AZURE_TENANT_ID: ${{ inputs.dr-azure-tenant-id }}
+          AZURE_SUBSCRIPTION_ID: ${{ inputs.dr-azure-subscription-id }}
           KEY_VAULT_NAME: ${{ inputs.dr-key-vault-name }}
           GITHUB_ENVIRONMENT: ${{ inputs.dr-github-environment }}
         run: |
           set -euo pipefail
-          for name in ECR_READER_ROLE_ARN SEED_ROLE_ARN ACR_NAME ACR_CLIENT_ID SEED_CLIENT_ID KEY_VAULT_NAME GITHUB_ENVIRONMENT; do
+          for name in ECR_READER_ROLE_ARN SEED_ROLE_ARN ACR_NAME ACR_CLIENT_ID SEED_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID KEY_VAULT_NAME GITHUB_ENVIRONMENT; do
             [[ -n "${!name}" ]] || { echo "::error::missing DR input: $name"; exit 1; }
           done
 
@@ -165,6 +175,8 @@ jobs:
       ecr-reader-role-arn: ${{ inputs.dr-ecr-reader-role-arn }}
       acr-name: ${{ inputs.dr-acr-name }}
       azure-client-id: ${{ inputs.dr-acr-client-id }}
+      azure-tenant-id: ${{ inputs.dr-azure-tenant-id }}
+      azure-subscription-id: ${{ inputs.dr-azure-subscription-id }}
       aws-region: ${{ inputs.aws-region }}
 
   sync-dr-secrets:
@@ -176,6 +188,8 @@ jobs:
       aws-region: ${{ inputs.aws-region }}
       seed-role-arn: ${{ inputs.dr-seed-role-arn }}
       azure-client-id: ${{ inputs.dr-seed-client-id }}
+      azure-tenant-id: ${{ inputs.dr-azure-tenant-id }}
+      azure-subscription-id: ${{ inputs.dr-azure-subscription-id }}
       key-vault-name: ${{ inputs.dr-key-vault-name }}
 
   open-promotion-pr:

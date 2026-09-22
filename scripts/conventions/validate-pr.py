@@ -225,7 +225,11 @@ def touches_infrastructure(changed_files: list[str]) -> bool:
 def infrastructure_checkbox_checked(body: str) -> bool:
     pattern = re.compile(
         rf"^[ \t]*-[ \t]*\[[xX]\][ \t]+{re.escape(INFRASTRUCTURE_CHECKBOX)}"
-        r"[ \t]*$",
+        # The repositories' templates end this line with a reference, for
+        # example "(`microservice-app-ai-agents/rules/mcp.md`)". The contract is
+        # the checked box, so anything the template itself adds after the label
+        # is accepted; the line must still start with the exact label.
+        r"[^\n]*$",
         re.MULTILINE,
     )
     return pattern.search(body) is not None

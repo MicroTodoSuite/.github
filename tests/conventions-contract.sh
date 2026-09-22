@@ -198,6 +198,21 @@ expect_rejection "unchecked Kubernetes documentation checkbox" \
 expect_pass "checked infrastructure documentation checkbox" \
   "feat(ci): enforce pull request conventions" \
   "feat/pull-request-conventions" "$checked_body" true "modules/example/main.tf\n"
+
+# The repositories' pull request templates print this line with a trailing
+# reference: "... is listed above (`microservice-app-ai-agents/rules/mcp.md`)".
+# A body that keeps the template's own wording must pass; the checkbox is the
+# contract, not the absence of the reference the template itself supplies.
+template_suffix_body="${checked_body/is listed above/is listed above (\`microservice-app-ai-agents/rules/mcp.md\`)}"
+expect_pass "checked infrastructure checkbox with the template's trailing reference" \
+  "feat(ci): enforce pull request conventions" \
+  "feat/pull-request-conventions" "$template_suffix_body" true "modules/example/main.tf\n"
+
+unchecked_suffix_body="${valid_body/is listed above/is listed above (\`microservice-app-ai-agents/rules/mcp.md\`)}"
+expect_rejection "unchecked infrastructure checkbox with the template's trailing reference" \
+  "infrastructure documentation checkbox must be checked" \
+  "feat(ci): enforce pull request conventions" \
+  "feat/pull-request-conventions" "$unchecked_suffix_body" true "modules/example/main.tf\n"
 expect_pass "non-infrastructure repository ignores Terraform checkbox" \
   "feat(ci): enforce pull request conventions" \
   "feat/pull-request-conventions" "$valid_body" false "modules/example/main.tf\n"

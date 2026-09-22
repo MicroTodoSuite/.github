@@ -1,0 +1,39 @@
+name: conventions contract self-test
+
+# Runs the delivery-conventions contract at this commit. The validator in
+# scripts/conventions/validate-pr.py gates every pull request in the
+# organization, and tests/conventions-contract.sh is its only test, but nothing
+# ran it: a change that broke a rule, or that disagreed with the repositories'
+# pull request templates, reached main unnoticed. That is how the infrastructure
+# checkbox came to reject the very line the templates print.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/conventions/validate-pr.py"
+      - "tests/conventions-contract.sh"
+      - ".github/workflows/conventions.yml"
+      - ".github/workflows/conventions-contract-self-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/conventions/validate-pr.py"
+      - "tests/conventions-contract.sh"
+      - ".github/workflows/conventions.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-test:
+    name: conventions contract
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the delivery-conventions contract
+        run: bash tests/conventions-contract.sh
